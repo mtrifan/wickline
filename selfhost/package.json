@@ -8,9 +8,11 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "test": "node --test --test-reporter=spec \"test/unit/**/*.test.mjs\" \"test/contract/**/*.test.mjs\"",
-    "test:contract": "node --test --test-reporter=spec \"test/contract/**/*.test.mjs\"",
-    "test:unit": "node --test --test-reporter=spec \"test/unit/**/*.test.mjs\"",
-    "check:upstream-untouched": "node ci/check-upstream-untouched.mjs"
+    "test": "node --disable-warning=ExperimentalWarning --test --test-reporter=spec \"test/unit/**/*.test.mjs\" \"test/contract/**/*.test.mjs\" \"test/api/**/*.test.mjs\"",
+    "test:contract": "node --disable-warning=ExperimentalWarning --test --test-reporter=spec \"test/contract/**/*.test.mjs\"",
+    "test:unit": "node --disable-warning=ExperimentalWarning --test --test-reporter=spec \"test/unit/**/*.test.mjs\"",
+    "check:upstream-untouched": "node ci/check-upstream-untouched.mjs",
+    "test:api": "node --disable-warning=ExperimentalWarning --test --test-reporter=spec \"test/api/**/*.test.mjs\"",
+    "start": "node --disable-warning=ExperimentalWarning server.mjs"
   }
 }
