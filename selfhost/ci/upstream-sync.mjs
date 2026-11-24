@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Upstream synchronisation for the self-hosted fork (see UPSTREAM.md and ARCHITECTURE.md §5.3).
+// Upstream synchronisation for the self-hosted fork (see UPSTREAM.md and selfhost/docs/PLAN.md §5.3).
 //
 //   prepare  (job A: read-only token, no secrets) finds the newest upstream release, merges it into a
 //            temporary integration branch, and writes report.json + merged.bundle into --out.
@@ -35,7 +35,17 @@ export function compareVersions(a, b) {
   if (a.pre === b.pre) return 0;
   if (!a.pre) return 1; // a release ranks above its pre-releases
   if (!b.pre) return -1;
-  return a.pre < b.pre ? -1 : 1;
+  // Semver: dot-separated identifiers, numeric ones compared numerically and below alphanumerics.
+  const pa = a.pre.split('.'); const pb = b.pre.split('.');
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if (pa[i] === undefined) return -1;
+    if (pb[i] === undefined) return 1;
+    const na = /^\d+$/.test(pa[i]); const nb = /^\d+$/.test(pb[i]);
+    if (na && nb && Number(pa[i]) !== Number(pb[i])) return Number(pa[i]) - Number(pb[i]);
+    if (na !== nb) return na ? -1 : 1;
+    if (pa[i] !== pb[i]) return pa[i] < pb[i] ? -1 : 1;
+  }
+  return 0;
 }
 
 /** Newest stable tag among the given names (pre-releases ignored). */
@@ -49,7 +59,7 @@ export const marker = (kind, version) => `<!-- ${MARKER_PREFIX}:${kind}:${versio
 /** Converts a glob-ish integration-point file spec into a matcher. */
 function fileMatcher(spec) {
   const parts = spec.split(',').map((s) => s.trim()).filter(Boolean);
-  const res = parts.map((p) => new RegExp(`^${p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\u0000/g, '.*')}$`));
+  const res = parts.map((p) => new RegExp(`^${p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*\*/g, '\u0000').replace(/\*/g, '[^/]*').replace(/\u0000/g, '.*')}$`));
   return (file) => res.some((re) => re.test(file));
 }
 
@@ -111,22 +121,25 @@ export function validationFromOutcomes(outcomes, runUrl) {
   return { ok, summary, rows };
 }
 
-const list = (items, fmt = (x) => `- \`${x}\``) => (items.length ? items.map(fmt).join('\n') : '_none_');
+/** Renders an upstream-derived name (file, tag) as an inert code span. */
+export const code = (x) => `\`${String(x).replace(/[`\r\n]/g, '?').replace(/<!--/g, '&lt;!--').slice(0, 300)}\``;
+
+const list = (items, fmt = (x) => `- ${code(x)}`) => (items.length ? items.map(fmt).join('\n') : '_none_');
 
 export function prBody(r, validation) {
   return [
     marker('pr', r.version),
     `## Integrate upstream ${r.version}`,
     '',
-    `Merges upstream release [${r.version}](https://github.com/${r.upstreamRepo}/releases/tag/${r.version}) into \`${r.base}\` (previously integrated: \`${r.previous}\`).`,
-    r.skipped.length ? `Skipped intermediate releases (contained in this one): ${r.skipped.map((t) => `\`${t}\``).join(', ')}.` : '',
+    `Merges upstream release [${r.version}](https://github.com/${r.upstreamRepo}/releases/tag/${r.version}) into \`${r.base}\` (previously integrated: ${r.previous ? code(r.previous) : '_none_'}).`,
+    r.skipped.length ? `Skipped intermediate releases (contained in this one): ${r.skipped.map(code).join(', ')}.` : '',
     '',
     '### Validation (job B, no secrets)',
     validation.summary,
     '',
     '### Self-hosting integration points touched',
     r.points.length
-      ? r.points.map((p) => `- **${p.id}**: ${p.contract}\n  - files: ${p.files.map((f) => `\`${f}\``).join(', ')}\n  - test: \`selfhost/${p.test}\``).join('\n')
+      ? r.points.map((p) => `- **${p.id}**: ${p.contract}\n  - files: ${p.files.map(code).join(', ')}\n  - test: \`selfhost/${p.test}\``).join('\n')
       : '_none — no upstream file the self-hosted edition depends on changed_',
     '',
     '### Upstream workflow files added or changed',
@@ -157,7 +170,7 @@ export function conflictBody(r) {
     list(r.conflicts),
     '',
     '### Integration points involved',
-    list(r.points.map((p) => `${p.id} (${p.files.join(', ')})`)),
+    list(r.points.map((p) => `${p.id}: ${p.files.map(code).join(', ')}`), (x) => `- ${x}`),
     '',
     '### Resolve locally',
     '```sh',
@@ -199,7 +212,7 @@ export function workflowsChangedBody(r) {
     '```',
     '',
     '### Integration points touched',
-    list(r.points.map((p) => `${p.id} → selfhost/${p.test}`)),
+    list(r.points.map((p) => `${p.id} → selfhost/${p.test}`), (x) => `- ${x}`),
     '',
     '### Upstream release notes',
     r.notes ? sanitizeUpstreamText(r.notes, r.upstreamRepo) : '_none published_',
@@ -217,7 +230,7 @@ export function validationFailedBody(r, validation, branchUrl) {
     validation.summary,
     '',
     '### Integration points touched',
-    list(r.points.map((p) => `${p.id} → selfhost/${p.test}`)),
+    list(r.points.map((p) => `${p.id} → selfhost/${p.test}`), (x) => `- ${x}`),
   ].join('\n');
 }
 
@@ -283,15 +296,19 @@ function prepare() {
   if (!version) throw new Error('No upstream release found');
 
   const baseRef = `refs/remotes/origin/${base}`;
-  const previous = tryGit('describe', '--tags', '--abbrev=0', '--match', 'v[0-9]*', baseRef) || null;
+  const described = tryGit('describe', '--tags', '--abbrev=0', '--match', 'v[0-9]*', baseRef);
+  const previous = parseVersion(described) ? described : null;
   const integrated = tryGit('merge-base', '--is-ancestor', `refs/tags/${version}`, baseRef) !== null;
 
   const prevV = previous && parseVersion(previous);
   const curV = parseVersion(version);
   const skipped = allTags.map(parseVersion).filter((v) => v && !v.pre && prevV && compareVersions(v, prevV) > 0 && compareVersions(v, curV) < 0).sort(compareVersions).map((v) => v.tag);
 
+  // Upstream's own changes since the histories last met (three-dot diff): independent of what this
+  // fork added, and of whether a previous release tag is reachable.
+  const mergeBase = tryGit('merge-base', baseRef, `refs/tags/${version}`);
   const range = previous ? `${previous}..${version}` : version;
-  const changed = previous ? git('diff', '--name-only', previous, version).split('\n').filter(Boolean) : [];
+  const changed = mergeBase ? git('diff', '--name-only', `${baseRef}...refs/tags/${version}`).split('\n').filter(Boolean) : [];
   const commits = git('log', '--no-merges', '--format=%h %s', range).split('\n').filter(Boolean).slice(0, 200);
   const unreleased = git('log', '--no-merges', '--format=%h %s', `${version}..refs/remotes/upstream/main`).split('\n').filter(Boolean).slice(0, 200);
   const points = touchedPoints(JSON.parse(readFileSync(path.join(ROOT, 'selfhost/INTEGRATION_POINTS.json'), 'utf8')).points, changed);
@@ -302,8 +319,15 @@ function prepare() {
     conflicts: [], points, workflows: upstreamWorkflowChanges(changed), collisions: forkPathCollisions(changed), commits, unreleased,
     notes: releases.find((x) => x.tag_name === version)?.body || '',
     upstreamMain: git('rev-parse', 'refs/remotes/upstream/main'),
+    mirrorWorkflows: [], remoteBranchSha: '',
     existing: { pr: null, issue: null },
   };
+
+  // Mirror check here, where upstream main is already fetched: workflow files the fast-forward of
+  // this fork's main would bring in.
+  if (tryGit('fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main') !== null) {
+    report.mirrorWorkflows = upstreamWorkflowChanges(git('diff', '--name-only', 'refs/remotes/origin/main', 'refs/remotes/upstream/main').split('\n').filter(Boolean));
+  }
 
   // Duplicate guard: an open PR for the branch, or an open issue carrying this version's marker.
   if (!integrated) {
@@ -313,27 +337,26 @@ function prepare() {
     report.existing.issue = issues.find((i) => ['conflict', 'validation', 'workflows'].some((k) => hasMarker(i.body, k, version))) || null;
   }
 
-  if (!integrated) {
-    git('switch', '--quiet', '-C', report.branch, baseRef);
-    const merged = tryRun('git', ['-c', 'user.name=selfhost-upstream-sync', '-c', 'user.email=selfhost-upstream-sync@users.noreply.github.com',
+  if (!integrated && !mergeBase) {
+    // No common history with upstream: nothing can be classified safely. Fail closed.
+    report.status = 'no-baseline';
+  } else if (!integrated) {
+    // Reuse an existing integration branch (it may carry reviewer fixes) instead of recreating it.
+    const remoteBranch = `refs/remotes/origin/${report.branch}`;
+    if (tryGit('fetch', '--no-tags', '--quiet', 'origin', `+refs/heads/${report.branch}:${remoteBranch}`) !== null) {
+      report.remoteBranchSha = git('rev-parse', remoteBranch);
+    }
+    git('switch', '--quiet', '-C', report.branch, report.remoteBranchSha ? remoteBranch : baseRef);
+    const alreadyMerged = tryGit('merge-base', '--is-ancestor', `refs/tags/${version}`, 'HEAD') !== null;
+    const merged = alreadyMerged ? 'already' : tryRun('git', ['-c', 'user.name=selfhost-upstream-sync', '-c', 'user.email=selfhost-upstream-sync@users.noreply.github.com',
       'merge', '--no-ff', '--no-edit', '-m', `chore(upstream): integrate ${version}`, `refs/tags/${version}`]);
     if (merged === null) {
       report.conflicts = git('diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean);
       tryGit('merge', '--abort');
       report.status = 'conflict';
-    } else {
-      // Provenance: everything the merge brings in relative to the production branch is upstream's.
-      const brought = git('diff', '--name-only', baseRef, `refs/heads/${report.branch}`).split('\n').filter(Boolean);
-      report.workflows = upstreamWorkflowChanges(brought);
-      report.collisions = forkPathCollisions(brought);
-      report.points = touchedPoints(JSON.parse(readFileSync(path.join(ROOT, 'selfhost/INTEGRATION_POINTS.json'), 'utf8')).points, brought);
     }
     if (report.status === 'conflict') {
       // reported below
-    } else if (!previous) {
-      // Cannot tell what upstream changed since the last integration: fail closed.
-      report.status = 'workflows-changed';
-      report.collisions = [...report.collisions, '(no previously integrated upstream release found: integrate by hand once)'];
     } else if (report.workflows.length || report.collisions.length) {
       // Upstream changed its workflow files. Pushing them would let new upstream workflow code run
       // in this repository, so this release is integrated by hand (see UPSTREAM.md).
@@ -345,7 +368,7 @@ function prepare() {
   }
 
   writeFileSync(path.join(out, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
-  console.log(`upstream ${version} (previous ${previous ?? 'none'}): ${report.status}; ${points.length} integration point(s) touched; ${unreleased.length} unreleased upstream commit(s)`);
+  console.log(`upstream ${version} (previous ${previous ?? 'none'}): ${report.status}; ${report.points.length} integration point(s) touched; ${unreleased.length} unreleased upstream commit(s)`);
   const ghOut = process.env.GITHUB_OUTPUT;
   if (ghOut) writeFileSync(ghOut, `status=${report.status}\nversion=${version}\nbranch=${report.branch}\n`, { flag: 'a' });
 }
@@ -369,7 +392,7 @@ function assertSettings(repo) {
 
 function upsertIssue({ repo, title, body, existing, dry }) {
   if (dry) { console.log(`[dry-run] ${existing ? `update issue #${existing.number}` : 'create issue'}: ${title}`); return; }
-  if (existing) gh('issue', 'edit', String(existing.number), '--repo', repo, '--body', body);
+  if (existing) gh('issue', 'edit', String(existing.number), '--repo', repo, '--title', title, '--body', body);
   else gh('issue', 'create', '--repo', repo, '--title', title, '--label', LABEL, '--body', body);
 }
 
@@ -399,8 +422,7 @@ function publish() {
   // 2. main mirrors upstream/main: fast-forward only, branch only (tags are never pushed).
   // A mirror push that adds or changes workflow files would activate upstream workflow code here,
   // so those updates wait for the owner (the token can push workflow files).
-  git('fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main');
-  const mirrorWorkflows = upstreamWorkflowChanges(git('diff', '--name-only', 'refs/remotes/origin/main', r.upstreamMain).split('\n').filter(Boolean));
+  const mirrorWorkflows = r.mirrorWorkflows || [];
   let ff = 'skipped';
   if (mirrorWorkflows.length) {
     const existing = ghJson('issue', 'list', '--repo', repo, '--state', 'open', '--label', LABEL, '--json', 'number,body').find((i) => hasMarker(i.body, 'mirror-workflows'));
@@ -408,6 +430,8 @@ function publish() {
       body: [marker('mirror-workflows', 'main'), 'Upstream `main` changes workflow files, so the bot did not fast-forward this fork\'s `main` (that would run new upstream workflow code here).', '', list(mirrorWorkflows), '',
         'Review the changes, then mirror by hand and keep non-`selfhost-*` workflows disabled:', '```sh', `git fetch --no-tags https://github.com/${r.upstreamRepo}.git main`, 'git push origin FETCH_HEAD:refs/heads/main', '```'].join('\n') });
   } else if (!dry) {
+    // Fetching transfers objects only; nothing from upstream is executed here.
+    git('fetch', '--no-tags', '--quiet', `https://github.com/${r.upstreamRepo}.git`, '+refs/heads/main:refs/remotes/upstream/main');
     ff = tryGit('push', 'origin', `${r.upstreamMain}:refs/heads/main`);
   }
   if (ff === null) {
@@ -422,8 +446,8 @@ function publish() {
   if (r.status === 'merged') {
     if (!dry) {
       git('fetch', '--quiet', path.join(dir, 'merged.bundle'), `+refs/heads/${r.branch}:refs/heads/${r.branch}`);
-      // integrate/* branches belong to the bot; a re-run replaces the previous attempt.
-      git('push', '--force', 'origin', `refs/heads/${r.branch}:refs/heads/${r.branch}`);
+      // Lease on the branch state prepare saw: reviewer commits pushed since then are never overwritten.
+      git('push', `--force-with-lease=refs/heads/${r.branch}:${r.remoteBranchSha || ''}`, 'origin', `refs/heads/${r.branch}:refs/heads/${r.branch}`);
     }
     if (validation.ok) {
       const title = `chore(upstream): integrate ${r.version}`;
@@ -439,6 +463,9 @@ function publish() {
     } else {
       upsertIssue({ repo, title: `Upstream ${r.version}: validation failed`, body: validationFailedBody(r, validation, branchUrl), existing: r.existing.issue, dry });
     }
+  } else if (r.status === 'no-baseline') {
+    upsertIssue({ repo, title: `Upstream ${r.version}: no shared history (manual integration)`, existing: r.existing.issue, dry,
+      body: `${marker('workflows', r.version)}\nThe production branch shares no history with upstream ${code(r.version)}, so the bot cannot tell what upstream changed. Integrate by hand once (see UPSTREAM.md); later releases are automated again.` });
   } else if (r.status === 'workflows-changed') {
     upsertIssue({ repo, title: `Upstream ${r.version}: workflow files changed (manual integration)`, body: workflowsChangedBody(r), existing: r.existing.issue, dry });
   } else if (r.status === 'conflict') {

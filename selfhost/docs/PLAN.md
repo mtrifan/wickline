@@ -640,6 +640,14 @@ CI check `selfhost-ci › upstream-untouched`: `git diff --name-only <merged-ups
 
 ### 5.3 Daily sync workflow (`selfhost-upstream-sync.yml`)
 
+> **Implemented in Phase 0, with hardening from the Phase 0 security review.** The authoritative description is now [UPSTREAM.md](../../UPSTREAM.md). Differences from the outline below:
+> - Validation is three separate jobs (trusted untouched check, selfhost tests, upstream tests).
+> - Markers are `<!-- upstream-sync:<kind>:<version> -->`, recognised only at the start of a body.
+> - Any upstream change to `.github/workflows/**`, or to fork-owned paths, produces a manual-integration issue instead of a push.
+> - The token additionally needs Variables (read/write) and Actions (read).
+> - Playwright and Docker validation join the validate stage in Phases 1–2.
+> - The `needs-review` label is not used.
+
 Runs on cron at 05:17 UTC and on `workflow_dispatch`. It is split into **three jobs**: a job that holds the token never runs repository code.
 
 **Job A: `prepare`** (permissions `contents: read`, no secrets)

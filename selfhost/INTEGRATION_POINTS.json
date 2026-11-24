@@ -1,5 +1,5 @@
 {
-  "$comment": "Upstream files and behaviours the self-hosted edition depends on. The upstream sync workflow lists every entry whose file an upstream release touches; the named contract test proves the behaviour still holds. Keep this in step with ARCHITECTURE.md §4.",
+  "$comment": "Upstream files and behaviours the self-hosted edition depends on. The upstream sync workflow lists every entry whose file an upstream release touches; the named contract test proves the behaviour still holds. Keep this in step with selfhost/docs/PLAN.md §4.",
   "points": [
     { "id": "server-start", "file": "server.mjs", "contract": "startServer({port,host}) resolves {server, port}; the server has exactly one 'request' listener (captured and delegated to); importing has no listen side effect", "test": "test/contract/server.test.mjs" },
     { "id": "server-methods", "file": "server.mjs", "contract": "non-GET requests get 405 before routing, so selfhost must route its own mutations", "test": "test/contract/server.test.mjs" },

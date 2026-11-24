@@ -54,14 +54,31 @@ jobs:
     name: no upstream file modified
     runs-on: ubuntu-latest
     steps:
+      # The checker runs from the trusted base branch, never from the change under test, so a pull
+      # request cannot weaken the check that guards it.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref || 'selfhosted' }}
+          persist-credentials: false
+          path: trusted
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           persist-credentials: false
+          path: candidate
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       # Upstream tags are fetched only into this runner, never pushed to the fork.
       - name: Fetch upstream releases and main
+        working-directory: candidate
         run: git fetch --no-tags https://github.com/keptaduona/wickline.git '+refs/tags/v*:refs/tags/v*' '+refs/heads/main:refs/remotes/upstream/main'
-      - run: node selfhost/ci/check-upstream-untouched.mjs
+      - name: Check
+        run: |
+          if [ -f trusted/selfhost/ci/check-upstream-untouched.mjs ]; then
+            node trusted/selfhost/ci/check-upstream-untouched.mjs --root candidate
+          else
+            # Bootstrap only: the base branch predates the checker (the PR that introduces it).
+            echo "::warning::Base branch has no trusted checker yet; using the candidate's copy (bootstrap)"
+            node candidate/selfhost/ci/check-upstream-untouched.mjs --root candidate
+          fi

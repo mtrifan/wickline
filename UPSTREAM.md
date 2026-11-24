@@ -22,18 +22,18 @@ Upstream compatibility is a primary requirement. The rule that makes it cheap: *
 
 ## Automated synchronisation (`selfhost-upstream-sync`, daily 05:17 UTC)
 
-The workflow has three jobs, so new upstream code never runs where a write token exists.
+The workflow runs `prepare`, three validation jobs, and `publish`, so new upstream code never runs where a write token exists.
 
-1. **prepare** (read-only token)
+1. **prepare** (read-only token). It reuses an existing `integrate/*` branch, so commits a reviewer pushed there are kept; publish pushes with a lease and never overwrites them.
    - Finds the newest *published* upstream release. Drafts and pre-releases are ignored.
    - Checks whether that release is already merged into `selfhosted`.
    - Looks for an existing PR or issue for that release, using hidden markers `<!-- upstream-sync:<kind>:<version> -->`.
    - Merges the release into `integrate/upstream-<version>`.
    - Computes the touched integration points (`selfhost/INTEGRATION_POINTS.json`), any new upstream workflow files, the release notes, and the commits on upstream `main` that are not yet released.
-2. **validate** (no secrets) runs on the merged tree. The pass/fail verdict comes from the runner's step outcomes, not from files that upstream code could rewrite:
-   - upstream `npm test`;
+2. **validate** (three jobs, no secrets) runs on the merged tree. The verdict is each job's result as reported by the runner, never a file that upstream code could rewrite:
+   - the upstream-untouched check: a trusted copy of the script from `selfhosted`, run against the merged tree without executing upstream code;
    - selfhost unit and contract tests;
-   - the upstream-untouched check.
+   - upstream `npm test`.
 3. **publish** (`SYNC_TOKEN`) runs only trusted code from `selfhosted`:
    - Asserts the repository settings: merge commits only, and no active upstream workflow.
    - Fast-forwards `main`, unless the update adds or changes workflow files. In that case it opens an issue, and you mirror by hand after review.
@@ -41,7 +41,7 @@ The workflow has three jobs, so new upstream code never runs where a write token
      - a **PR** (clean merge, validation green);
      - an **issue** "workflow files changed", when the release modifies any file under `.github/workflows` (whatever its name) or places files in paths this fork owns. The bot never pushes upstream workflow changes, because that would run new upstream workflow code here. You integrate that release by hand;
      - an **issue** "merge conflicts", with the files, the affected integration points and the resolution commands;
-     - an **issue** "validation failed", with log excerpts. The branch is pushed for debugging.
+     - an **issue** "validation failed", with a results table and a link to the run logs. The branch is pushed for debugging.
    - Keeps one rolling issue, *Upstream: unreleased changes*, up to date.
    - Records a heartbeat in the repository variable `UPSTREAM_SYNC_LAST_OK`.
 
@@ -98,6 +98,7 @@ These live outside git, and the sync job verifies them on every run:
     - Issues: read/write
     - Workflows: read/write (upstream merges can change workflow files)
     - Variables: read/write
+    - Actions: read (to check that upstream workflows stay disabled)
     - Administration: read
   - **Expiry:** 90 days. Renew it before it expires; the watchdog catches a missed renewal.
   - **Why the default `GITHUB_TOKEN` is not enough:** PRs it creates do not trigger CI, and it cannot push changes to `.github/workflows`.

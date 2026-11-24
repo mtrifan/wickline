@@ -1,4 +1,4 @@
-# Daily upstream integration for the self-hosted fork (UPSTREAM.md, ARCHITECTURE.md §5.3).
+# Daily upstream integration for the self-hosted fork (UPSTREAM.md, selfhost/docs/PLAN.md §5.3).
 #
 # Three jobs so that new upstream code never runs where a write token exists:
 #   prepare  read-only token: find the newest upstream release, merge it into integrate/upstream-<v>

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseVersion, compareVersions, newestStable, marker, touchedPoints, upstreamWorkflowChanges,
-  sanitizeUpstreamText, prBody, conflictBody, rollingBody, hasMarker, validationFromOutcomes, workflowsChangedBody, forkPathCollisions,
+  sanitizeUpstreamText, prBody, conflictBody, rollingBody, hasMarker, validationFromOutcomes, workflowsChangedBody, forkPathCollisions, code,
 } from '../../ci/upstream-sync.mjs';
 
 test('versions sort numerically and pre-releases rank below their release', () => {
@@ -101,4 +101,20 @@ test('workflow-change issue explains the manual path', () => {
   const b = workflowsChangedBody(report);
   assert.ok(b.startsWith(marker('workflows', 'v0.2.0')));
   assert.ok(b.includes('.github/workflows/new.yml') && b.includes('git merge --no-ff v0.2.0'));
+});
+
+test('upstream names render as inert code spans', () => {
+  assert.equal(code('a`b\n@x<!--y'), '`a?b?@x&lt;!--y`');
+  const b = prBody({ ...report, points: [{ id: 'p', contract: 'c', files: ['evil`@team\nx.js'], test: 't' }], previous: 'v0.1.9' }, { ok: true, summary: 's' });
+  assert.ok(b.includes('`evil?@team?x.js`'));
+});
+
+test('semver pre-release identifiers compare numerically', () => {
+  assert.ok(compareVersions(parseVersion('v1.0.0-rc.2'), parseVersion('v1.0.0-rc.10')) < 0);
+  assert.ok(compareVersions(parseVersion('v1.0.0-alpha'), parseVersion('v1.0.0-alpha.1')) < 0);
+  assert.ok(compareVersions(parseVersion('v1.0.0-1'), parseVersion('v1.0.0-beta')) < 0);
+});
+
+test('a ? in an integration-point spec is literal', () => {
+  assert.deepEqual(touchedPoints([{ id: 'q', file: 'a?.js' }], ['ab.js', 'a?.js']).map((p) => p.files), [['a?.js']]);
 });

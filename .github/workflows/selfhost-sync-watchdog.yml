@@ -26,7 +26,8 @@ jobs:
           echo "last successful sync: ${LAST_OK:-never} (${age_h}h ago)"
           [ "$age_h" -lt 72 ] && exit 0
           title="Upstream sync has not succeeded for 3+ days"
-          if gh issue list --repo "$REPO" --state open --search "\"$title\" in:title" --json number --jq '.[0].number' | grep -q .; then
+          open=$(gh issue list --repo "$REPO" --state open --search "\"$title\" in:title" --json number --jq 'length')
+          if [ "$open" -gt 0 ]; then
             echo "issue already open"; exit 0
           fi
           gh issue create --repo "$REPO" --title "$title" --body "Last successful run of \`selfhost-upstream-sync\`: ${LAST_OK:-never}.
