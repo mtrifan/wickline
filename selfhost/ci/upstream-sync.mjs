@@ -60,9 +60,17 @@ export function touchedPoints(points, changedFiles) {
     .filter((p) => p.files.length);
 }
 
-/** Upstream workflow files (not ours) added or changed. */
-export const upstreamWorkflowChanges = (changedFiles) =>
-  changedFiles.filter((f) => /^\.github\/workflows\//.test(f) && !/^\.github\/workflows\/selfhost-/.test(f));
+/**
+ * Workflow files in an upstream-only diff. Every one counts, whatever its name: an upstream file
+ * named selfhost-*.yml is still upstream code.
+ */
+export const upstreamWorkflowChanges = (upstreamChangedFiles) =>
+  upstreamChangedFiles.filter((f) => /^\.github\/workflows\//.test(f));
+
+/** Upstream files that land in paths this fork owns (selfhost/, selfhost-* workflows, root docs). */
+export const forkPathCollisions = (upstreamChangedFiles) =>
+  upstreamChangedFiles.filter((f) => /^selfhost\//.test(f) || /^\.github\/workflows\/selfhost-/.test(f)
+    || /^(UPSTREAM|SELFHOSTED|ARCHITECTURE|CHANGELOG-SELFHOSTED|UPGRADE)\.md$/.test(f));
 
 /**
  * Makes upstream text safe to post in this repository: no @-mentions (they would notify upstream
@@ -174,6 +182,9 @@ export function workflowsChangedBody(r) {
     '',
     '### Workflow files changed upstream',
     list(r.workflows),
+    '',
+    '### Upstream files in paths this fork owns',
+    list(r.collisions || []),
     '',
     '### Steps',
     '1. Review each workflow change upstream.',
@@ -289,7 +300,7 @@ function prepare() {
   const report = {
     generatedAt: new Date().toISOString(), repo, upstreamRepo, base, version, previous, skipped,
     integrated, branch: `integrate/upstream-${version}`, status: integrated ? 'up-to-date' : 'pending',
-    conflicts: [], points, workflows: upstreamWorkflowChanges(changed), commits, unreleased,
+    conflicts: [], points, workflows: upstreamWorkflowChanges(changed), collisions: forkPathCollisions(changed), commits, unreleased,
     notes: releases.find((x) => x.tag_name === version)?.body || '',
     upstreamMain: git('rev-parse', 'refs/remotes/upstream/main'),
     existing: { pr: null, issue: null },
@@ -311,7 +322,7 @@ function prepare() {
       report.conflicts = git('diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean);
       tryGit('merge', '--abort');
       report.status = 'conflict';
-    } else if (report.workflows.length) {
+    } else if (report.workflows.length || report.collisions.length) {
       // Upstream changed its workflow files. Pushing them would let new upstream workflow code run
       // in this repository, so this release is integrated by hand (see UPSTREAM.md).
       report.status = 'workflows-changed';
@@ -374,8 +385,19 @@ function publish() {
   }
 
   // 2. main mirrors upstream/main: fast-forward only, branch only (tags are never pushed).
-  git('fetch', '--no-tags', '--quiet', `https://github.com/${r.upstreamRepo}.git`, '+refs/heads/main:refs/remotes/upstream/main');
-  const ff = dry ? 'skipped' : tryGit('push', 'origin', `${r.upstreamMain}:refs/heads/main`);
+  // A mirror push that adds or changes workflow files would activate upstream workflow code here,
+  // so those updates wait for the owner (the token can push workflow files).
+  git('fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main');
+  const mirrorWorkflows = upstreamWorkflowChanges(git('diff', '--name-only', 'refs/remotes/origin/main', r.upstreamMain).split('\n').filter(Boolean));
+  let ff = 'skipped';
+  if (mirrorWorkflows.length) {
+    const existing = ghJson('issue', 'list', '--repo', repo, '--state', 'open', '--label', LABEL, '--json', 'number,body').find((i) => hasMarker(i.body, 'mirror-workflows'));
+    upsertIssue({ repo, title: 'Upstream sync: main not mirrored (upstream workflow files changed)', existing, dry,
+      body: [marker('mirror-workflows', 'main'), 'Upstream `main` changes workflow files, so the bot did not fast-forward this fork\'s `main` (that would run new upstream workflow code here).', '', list(mirrorWorkflows), '',
+        'Review the changes, then mirror by hand and keep non-`selfhost-*` workflows disabled:', '```sh', `git fetch --no-tags https://github.com/${r.upstreamRepo}.git main`, 'git push origin FETCH_HEAD:refs/heads/main', '```'].join('\n') });
+  } else if (!dry) {
+    ff = tryGit('push', 'origin', `${r.upstreamMain}:refs/heads/main`);
+  }
   if (ff === null) {
     const existing = ghJson('issue', 'list', '--repo', repo, '--state', 'open', '--label', LABEL, '--json', 'number,body').find((i) => hasMarker(i.body, 'mirror'));
     upsertIssue({ repo, title: 'Upstream sync: main cannot be fast-forwarded', existing, dry,

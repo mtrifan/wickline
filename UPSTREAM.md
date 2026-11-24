@@ -36,10 +36,10 @@ The workflow has three jobs, so new upstream code never runs where a write token
    - the upstream-untouched check.
 3. **publish** (`SYNC_TOKEN`) runs only trusted code from `selfhosted`:
    - Asserts the repository settings: merge commits only, and no active upstream workflow.
-   - Fast-forwards `main`.
+   - Fast-forwards `main`, unless the update adds or changes workflow files. In that case it opens an issue, and you mirror by hand after review.
    - Opens or updates exactly one of:
      - a **PR** (clean merge, validation green);
-     - an **issue** "workflow files changed", when the release modifies upstream `.github/workflows`. The bot never pushes upstream workflow changes, because that would run new upstream workflow code here. You integrate that release by hand;
+     - an **issue** "workflow files changed", when the release modifies any file under `.github/workflows` (whatever its name) or places files in paths this fork owns. The bot never pushes upstream workflow changes, because that would run new upstream workflow code here. You integrate that release by hand;
      - an **issue** "merge conflicts", with the files, the affected integration points and the resolution commands;
      - an **issue** "validation failed", with log excerpts. The branch is pushed for debugging.
    - Keeps one rolling issue, *Upstream: unreleased changes*, up to date.

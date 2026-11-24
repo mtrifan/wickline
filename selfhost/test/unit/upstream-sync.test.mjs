@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseVersion, compareVersions, newestStable, marker, touchedPoints, upstreamWorkflowChanges,
-  sanitizeUpstreamText, prBody, conflictBody, rollingBody, hasMarker, validationFromOutcomes, workflowsChangedBody,
+  sanitizeUpstreamText, prBody, conflictBody, rollingBody, hasMarker, validationFromOutcomes, workflowsChangedBody, forkPathCollisions,
 } from '../../ci/upstream-sync.mjs';
 
 test('versions sort numerically and pre-releases rank below their release', () => {
@@ -30,8 +30,14 @@ test('touched integration points match plain files, comma lists and globs', () =
   assert.deepEqual(touchedPoints(points, ['serverXmjs']), [], 'dots are literal');
 });
 
-test('only upstream workflow changes are flagged', () => {
-  assert.deepEqual(upstreamWorkflowChanges(['.github/workflows/release.yml', '.github/workflows/selfhost-ci.yml', 'x.yml']), ['.github/workflows/release.yml']);
+test('every workflow file in an upstream diff is flagged, whatever its name', () => {
+  assert.deepEqual(upstreamWorkflowChanges(['.github/workflows/release.yml', '.github/workflows/selfhost-ci.yml', 'x.yml']),
+    ['.github/workflows/release.yml', '.github/workflows/selfhost-ci.yml']);
+});
+
+test('upstream files in fork-owned paths are collisions', () => {
+  assert.deepEqual(forkPathCollisions(['selfhost/x.mjs', '.github/workflows/selfhost-ci.yml', 'UPSTREAM.md', 'README.md', 'server.mjs']),
+    ['selfhost/x.mjs', '.github/workflows/selfhost-ci.yml', 'UPSTREAM.md']);
 });
 
 test('upstream text cannot mention people, cross-link our issues, or hide markers', () => {
