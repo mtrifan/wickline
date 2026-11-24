@@ -40,7 +40,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   // Outbound proxy for every fetch/WebSocket (same behaviour as `node server.mjs`).
   const proxyMod = await import(pathToFileURL(path.join(ROOT, 'lib/proxy.mjs')).href);
   const proxy = proxyMod.envProxy();
-  if (proxy.error) log.warn('ignoring invalid proxy setting', { proxy: String(proxy.text || '').replace(/\/\/[^@/]*@/, '//[credentials]@').replace(/^[^:/]*:[^@/]*@/, '[credentials]@'), error: proxy.error });
+  if (proxy.error) log.warn('ignoring invalid proxy setting (value not logged: it may contain credentials)', { error: proxy.error });
   if (proxy.url) { await proxyMod.setServerProxy(proxy.url); log.info('outbound traffic goes through a proxy', { proxy: proxy.url.replace(/\/\/[^@/]*@/, '//') }); }
 
   const { db, version: schema, migrated, backup } = openDatabase(cfg.dataDir, { log });

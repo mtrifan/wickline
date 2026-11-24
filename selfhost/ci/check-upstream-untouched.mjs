@@ -24,6 +24,7 @@ const tryGit = (...args) => { try { return git(...args); } catch { return null; 
 export const ALLOWED = [
   /^selfhost\//,
   /^\.github\/workflows\/selfhost-[\w.-]+\.ya?ml$/,
+  /^\.github\/dependabot\.ya?ml$/,
   /^(UPSTREAM|SELFHOSTED|ARCHITECTURE|CHANGELOG-SELFHOSTED|UPGRADE)\.md$/,
 ];
 
