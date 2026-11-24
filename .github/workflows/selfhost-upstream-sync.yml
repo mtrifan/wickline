@@ -1,0 +1,156 @@
+# Daily upstream integration for the self-hosted fork (UPSTREAM.md, ARCHITECTURE.md §5.3).
+#
+# Three jobs so that new upstream code never runs where a write token exists:
+#   prepare  read-only token: find the newest upstream release, merge it into integrate/upstream-<v>
+#   validate no secrets:      run upstream + selfhost tests on the merged tree
+#   publish  SYNC_TOKEN:      runs only trusted selfhost code from the production branch; pushes the
+#                             branch and opens/updates exactly one PR or issue. Never merges.
+#
+# SYNC_TOKEN: fine-grained PAT for this repository only, with Contents, Pull requests, Issues,
+# Workflows, Variables (read/write) and Administration (read). See UPSTREAM.md for renewal.
+name: selfhost-upstream-sync
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report what would happen; create nothing
+        type: boolean
+        default: false
+      version:
+        description: Integrate this upstream tag instead of the newest release (vX.Y.Z)
+        type: string
+        required: false
+
+permissions: {}
+
+concurrency:
+  group: selfhost-upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: keptaduona/wickline
+  BASE_BRANCH: selfhosted
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    outputs:
+      status: ${{ steps.prepare.outputs.status }}
+      version: ${{ steps.prepare.outputs.version }}
+      branch: ${{ steps.prepare.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE_BRANCH }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$VERSION" ] && ! printf '%s' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version must look like v1.2.3"; exit 1
+          fi
+          node selfhost/ci/upstream-sync.mjs prepare --out sync-out ${VERSION:+--version "$VERSION"}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sync-out
+          path: sync-out/
+          retention-days: 7
+
+  validate:
+    needs: prepare
+    if: needs.prepare.outputs.status == 'merged'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE_BRANCH }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: sync-out
+          path: sync-out
+      - name: Check out the merged tree
+        env:
+          BRANCH: ${{ needs.prepare.outputs.branch }}
+        run: |
+          git fetch --no-tags sync-out/merged.bundle "+refs/heads/$BRANCH:refs/heads/$BRANCH"
+          git checkout --quiet "$BRANCH"
+          git fetch --no-tags "https://github.com/$UPSTREAM_REPO.git" '+refs/tags/v*:refs/tags/v*' '+refs/heads/main:refs/remotes/upstream/main'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Upstream code runs here, in a job without secrets. Each check is recorded, not fatal, so the
+      # publish job can report every failure in one issue.
+      - name: Validate
+        run: |
+          set +e
+          out=sync-out/validation.log; : > "$out"; ok=true
+          check() { name="$1"; shift; echo "::group::$name"; "$@" > /tmp/step.log 2>&1; rc=$?; cat /tmp/step.log; echo "::endgroup::"
+            if [ $rc -eq 0 ]; then echo "✔ $name" >> "$out"; else ok=false; echo "✖ $name (exit $rc)" >> "$out"; tail -n 25 /tmp/step.log | sed 's/^/    /' >> "$out"; fi; }
+          check "npm ci --ignore-scripts" npm ci --ignore-scripts --no-audit --no-fund
+          check "upstream tests" npm test
+          check "selfhost unit + contract tests" npm --prefix selfhost test
+          check "no upstream file modified" node selfhost/ci/check-upstream-untouched.mjs
+          node -e 'const fs=require("fs");const log=fs.readFileSync(process.argv[1],"utf8");fs.writeFileSync("sync-out/validation.json",JSON.stringify({ok:process.argv[2]==="true",summary:"```\n"+log.trim()+"\n```"}))' "$out" "$ok"
+          cat "$out"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: validation
+          path: sync-out/validation.json
+          retention-days: 7
+
+  publish:
+    needs: [prepare, validate]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Require SYNC_TOKEN
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ -z "$SYNC_TOKEN" ] && [ "$DRY_RUN" != "true" ]; then
+            echo "::error::Secret SYNC_TOKEN is not set (see UPSTREAM.md)"; exit 1
+          fi
+      # Trusted code only: the production branch, never the merged upstream tree.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: sync-out
+          path: sync-out
+      - uses: actions/download-artifact@v4
+        if: needs.validate.result == 'success'
+        with:
+          name: validation
+          path: sync-out
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: node selfhost/ci/upstream-sync.mjs publish --in sync-out $([ "$DRY_RUN" = "true" ] && echo --dry-run)
