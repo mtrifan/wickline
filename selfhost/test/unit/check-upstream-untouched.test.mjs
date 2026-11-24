@@ -11,7 +11,7 @@ const SCRIPT = fileURLToPath(new URL('../../ci/check-upstream-untouched.mjs', im
 
 test('selfhost paths, prefixed workflows and the five root docs are allowed', () => {
   for (const p of ['selfhost/server.mjs', 'selfhost/docs/PLAN.md', '.github/workflows/selfhost-ci.yml',
-    'UPSTREAM.md', 'SELFHOSTED.md', 'ARCHITECTURE.md', 'CHANGELOG-SELFHOSTED.md', 'UPGRADE.md']) {
+    'UPSTREAM.md', 'SELFHOSTED.md', 'ARCHITECTURE.md', 'CHANGELOG-SELFHOSTED.md', 'UPGRADE.md', '.github/dependabot.yml']) {
     assert.ok(isAllowedPath(p), p);
   }
 });

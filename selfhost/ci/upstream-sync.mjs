@@ -79,7 +79,7 @@ export const upstreamWorkflowChanges = (upstreamChangedFiles) =>
 
 /** Upstream files that land in paths this fork owns (selfhost/, selfhost-* workflows, root docs). */
 export const forkPathCollisions = (upstreamChangedFiles) =>
-  upstreamChangedFiles.filter((f) => /^selfhost\//.test(f) || /^\.github\/workflows\/selfhost-/.test(f)
+  upstreamChangedFiles.filter((f) => /^selfhost\//.test(f) || /^\.github\/workflows\/selfhost-/.test(f) || /^\.github\/dependabot\.ya?ml$/.test(f)
     || /^(UPSTREAM|SELFHOSTED|ARCHITECTURE|CHANGELOG-SELFHOSTED|UPGRADE)\.md$/.test(f));
 
 /**

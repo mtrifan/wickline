@@ -47,12 +47,12 @@ jobs:
       version: ${{ steps.prepare.outputs.version }}
       branch: ${{ steps.prepare.outputs.branch }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ env.BASE_BRANCH }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       - id: prepare
@@ -65,7 +65,7 @@ jobs:
             echo "::error::version must look like v1.2.3"; exit 1
           fi
           node selfhost/ci/upstream-sync.mjs prepare --out sync-out ${VERSION:+--version "$VERSION"}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sync-out
           path: sync-out/
@@ -82,18 +82,18 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ env.BASE_BRANCH }}
           persist-credentials: false
           path: trusted
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ env.BASE_BRANCH }}
           fetch-depth: 0
           persist-credentials: false
           path: merged
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: sync-out
           path: ${{ runner.temp }}/sync-out
@@ -106,10 +106,10 @@ jobs:
           git fetch --no-tags "$BUNDLE" "+refs/heads/$BRANCH:refs/heads/$BRANCH"
           git checkout --quiet "$BRANCH"
           git fetch --no-tags "https://github.com/$UPSTREAM_REPO.git" '+refs/tags/v*:refs/tags/v*' '+refs/heads/main:refs/remotes/upstream/main'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-      - run: node trusted/selfhost/ci/check-upstream-untouched.mjs --root merged
+      - run: node trusted/selfhost/ci/check-upstream-untouched.mjs --root merged --patches trusted/selfhost/UPSTREAM_PATCHES.json
 
   validate-selfhost:
     needs: prepare
@@ -118,13 +118,13 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ env.BASE_BRANCH }}
           fetch-depth: 0
           persist-credentials: false
           path: merged
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: sync-out
           path: ${{ runner.temp }}/sync-out
@@ -137,7 +137,7 @@ jobs:
           git fetch --no-tags "$BUNDLE" "+refs/heads/$BRANCH:refs/heads/$BRANCH"
           git checkout --quiet "$BRANCH"
           git fetch --no-tags "https://github.com/$UPSTREAM_REPO.git" '+refs/tags/v*:refs/tags/v*' '+refs/heads/main:refs/remotes/upstream/main'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       - working-directory: merged
@@ -150,13 +150,13 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ env.BASE_BRANCH }}
           fetch-depth: 0
           persist-credentials: false
           path: merged
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: sync-out
           path: ${{ runner.temp }}/sync-out
@@ -169,7 +169,7 @@ jobs:
           git fetch --no-tags "$BUNDLE" "+refs/heads/$BRANCH:refs/heads/$BRANCH"
           git checkout --quiet "$BRANCH"
           git fetch --no-tags "https://github.com/$UPSTREAM_REPO.git" '+refs/tags/v*:refs/tags/v*' '+refs/heads/main:refs/remotes/upstream/main'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       - working-directory: merged
@@ -194,16 +194,16 @@ jobs:
             echo "::error::Secret SYNC_TOKEN is not set (see UPSTREAM.md)"; exit 1
           fi
       # Trusted code only: the production branch, never the merged upstream tree.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ env.BASE_BRANCH }}
           fetch-depth: 0
           token: ${{ secrets.SYNC_TOKEN || github.token }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: sync-out
           path: sync-out
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
       - name: Publish

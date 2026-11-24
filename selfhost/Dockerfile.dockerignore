@@ -1,0 +1,19 @@
+# Allow-list: only what the image needs (BuildKit reads <Dockerfile>.dockerignore).
+*
+!package.json
+!package-lock.json
+!LICENSE
+!server.mjs
+!lib/
+!public/
+!community/
+!selfhost/
+selfhost/test/
+selfhost/docs/
+selfhost/ci/
+selfhost/unraid/
+selfhost/node_modules/
+selfhost/Dockerfile*
+selfhost/docker-compose*.yml
+selfhost/playwright*
+**/.DS_Store
