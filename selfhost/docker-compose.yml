@@ -2,14 +2,15 @@
 #
 # 1. mkdir -p data secrets && sudo chown 99:100 data
 # 2. Create the password hash (the hash contains "$", so it goes in a file, not in this YAML):
-#      docker run --rm -it ghcr.io/mtrifan/wickline:stable node selfhost/cli.mjs hash-password > secrets/password_hash
+#      docker run --rm -it ghcr.io/mtrifan/wickline:edge node selfhost/cli.mjs hash-password > secrets/password_hash
 #      chmod 644 secrets/password_hash
 # 3. docker compose up -d   →   http://<host>:5173
 name: wickline
 
 services:
   wickline:
-    image: ghcr.io/mtrifan/wickline:stable
+    # :edge until the first tagged release; then :stable (validated) or a pinned <version>-sh.<rev>.
+    image: ghcr.io/mtrifan/wickline:edge
     # To build from this repository instead:  build: { context: .., dockerfile: selfhost/Dockerfile }
     container_name: wickline
     restart: unless-stopped

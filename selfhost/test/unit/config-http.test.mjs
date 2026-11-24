@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadConfig, redacted, ConfigError } from '../../config.mjs';
-import { clientInfo, parseCookies, serializeCookie, sameOrigin, safeNext } from '../../http/request.mjs';
+import { clientInfo, parseCookies, serializeCookie, sameOrigin, safeNext, proxyMatcher, DEFAULT_TRUSTED_PROXIES } from '../../http/request.mjs';
 import { stripCors } from '../../http/headers.mjs';
 
-const HASH = 'scrypt$1024$8$1$c2FsdA==$aGFzaA==';
+const HASH = 'scrypt$16384$8$1$c2FsdA==$aGFzaA==';
 const problems = (env, opts) => { try { loadConfig(env, opts); return []; } catch (e) { assert.ok(e instanceof ConfigError, e.message); return e.problems; } };
 
 test('private defaults need only a password', () => {
@@ -45,11 +45,25 @@ test('test mode is refused in production, redaction hides secrets', () => {
 
 const req = (headers = {}, { ip = '10.0.0.5', method = 'GET' } = {}) => ({ headers, method, socket: { remoteAddress: `::ffff:${ip}` } });
 
-test('forwarded headers count only behind trusted proxies', () => {
+test('forwarded headers count only behind trusted proxies, and only from proxy addresses', () => {
+  const trusted = proxyMatcher(DEFAULT_TRUSTED_PROXIES);
   const r = req({ host: 'nas:5173', 'x-forwarded-for': '6.6.6.6, 203.0.113.9', 'x-forwarded-proto': 'https', 'x-forwarded-host': 'wl.example.com' });
-  assert.deepEqual(clientInfo(r, 0), { ip: '10.0.0.5', proto: 'http', host: 'nas:5173' }, 'untrusted: socket wins');
-  assert.deepEqual(clientInfo(r, 1), { ip: '203.0.113.9', proto: 'https', host: 'wl.example.com' }, 'spoofed leftmost entry ignored');
-  assert.equal(clientInfo(r, 2).ip, '6.6.6.6');
+  assert.deepEqual(clientInfo(r, 0, trusted), { ip: '10.0.0.5', proto: 'http', host: 'nas:5173' }, 'TRUST_PROXY off: socket wins');
+  assert.deepEqual(clientInfo(r, 1, trusted), { ip: '203.0.113.9', proto: 'https', host: 'wl.example.com' }, 'spoofed leftmost entry ignored');
+  assert.equal(clientInfo(r, 2, trusted).ip, '6.6.6.6');
+  const direct = req({ host: 'nas:5173', 'x-forwarded-for': '1.1.1.1', 'x-forwarded-proto': 'https' }, { ip: '198.51.100.20' });
+  assert.deepEqual(clientInfo(direct, 1, trusted), { ip: '198.51.100.20', proto: 'http', host: 'nas:5173' }, 'a client reaching the port directly cannot claim HTTPS or another IP');
+  const only = proxyMatcher(['172.18.0.2']);
+  assert.equal(clientInfo(r, 1, only).proto, 'http', 'explicit TRUSTED_PROXY_IPS excludes other private addresses');
+  assert.ok(proxyMatcher(['fd7a:115c:a1e0::/48'])('fd7a:115c:a1e0::1'));
+  assert.throws(() => proxyMatcher(['not-an-ip']));
+});
+
+test('TRUSTED_PROXY_IPS and scrypt parameters are validated', () => {
+  assert.ok(problems({ WICKLINE_PASSWORD: 'correct horse battery', TRUSTED_PROXY_IPS: '10.0.0.0/8, nope' }).some((p) => /TRUSTED_PROXY_IPS/.test(p)));
+  for (const bad of ['scrypt$1048576$8$1$c2FsdA==$aGFzaA==', 'scrypt$30000$8$1$c2FsdA==$aGFzaA==', 'scrypt$16384$32$1$c2FsdA==$aGFzaA==', 'scrypt$16384$8$16$c2FsdA==$aGFzaA==']) {
+    assert.ok(problems({ WICKLINE_PASSWORD_HASH: bad }).some((p) => /unsupported scrypt parameters/.test(p)), bad);
+  }
 });
 
 test('same-origin check for state-changing requests', () => {
@@ -65,9 +79,11 @@ test('same-origin check for state-changing requests', () => {
 
 test('post-login redirects stay on this site', () => {
   for (const bad of ['//evil.com', 'https://evil.com', '/\\evil.com', 'javascript:alert(1)', '/a\r\nSet-Cookie: x=1', '/selfhost/login?next=/',
-    '/\t/evil.com', '/\n/evil.com', '/ /evil.com', '/\x00/evil.com', '/a\\b', '/./selfhost/login']) assert.equal(safeNext(bad), '/', JSON.stringify(bad));
+    '/\t/evil.com', '/\n/evil.com', '/\x00/evil.com', '/a\\b', '/./selfhost/login']) assert.equal(safeNext(bad), '/', JSON.stringify(bad));
   assert.equal(safeNext('/?s=AAPL'), '/?s=AAPL');
   assert.equal(safeNext('/a/../b?x=1'), '/b?x=1', 'normalised, still local');
+  assert.equal(safeNext('/ /evil.com'), '/%20/evil.com', 'a space is just a path character');
+  assert.equal(safeNext('/my watchlist'), '/my%20watchlist');
   assert.equal(safeNext('/%2F/evil.com/..'), '/%2F/', 'an encoded slash stays a path segment, never a host');
 });
 

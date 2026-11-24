@@ -117,7 +117,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   }
 
   async function handle(req, res) {
-    const info = clientInfo(req, cfg.trustProxy);
+    const info = clientInfo(req, cfg.trustProxy, cfg.isTrustedProxy);
     stripCors(res);
     securityHeaders(res, { hsts: cfg.exposure === 'public' });
 
@@ -138,6 +138,11 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     if (!sameOrigin(req, info)) return sendJson(res, 403, { error: 'Cross-origin request refused' });
 
     if (url.pathname === '/selfhost/login' && (req.method === 'GET' || req.method === 'POST')) return handleLogin(req, res, info);
+
+    // Defence in depth for the JSON API: a header a cross-site form cannot send.
+    if (url.pathname.startsWith('/api/selfhost/') && !['GET', 'HEAD'].includes(req.method) && req.headers['x-wickline-selfhost'] !== '1') {
+      return sendJson(res, 403, { error: 'Missing X-Wickline-Selfhost header' });
+    }
 
     const auth = authenticate(req, info);
     if (!auth && !PUBLIC_ROUTES.has(route)) {
@@ -166,7 +171,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     }
   });
   server.headersTimeout = 30_000;
-  server.requestTimeout = 0; // SSE streams are long-lived
+  server.requestTimeout = 60_000; // receiving the request only; long-lived responses (SSE) are unaffected
   server.keepAliveTimeout = 65_000;
 
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(cfg.port, cfg.host, resolve); });

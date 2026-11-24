@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
-import { SELFHOST_PORT, UPSTREAM_PORT, PASSWORD } from '../../playwright.config.mjs';
+import { SELFHOST_PORT, UPSTREAM_PORT, TOTP_PORT, TOTP_SECRET, PASSWORD } from '../../playwright.config.mjs';
+import { totp } from '../../auth/totp.mjs';
 
 const SELFHOST = `http://127.0.0.1:${SELFHOST_PORT}`;
 const UPSTREAM = `http://127.0.0.1:${UPSTREAM_PORT}`;
@@ -61,4 +62,23 @@ test('upstream mode is unchanged: no login, no self-hosting code', async ({ page
   // Upstream keeps its open CORS and localStorage-only behaviour.
   const stored = await page.evaluate(() => { localStorage.setItem('wickline.e2e', '1'); return localStorage.getItem('wickline.e2e'); });
   expect(stored).toBe('1');
+});
+
+test('two-factor login: the code is required, then accepted', async ({ page }, testInfo) => {
+  const base = `http://127.0.0.1:${TOTP_PORT}`;
+  await page.goto(`${base}/`);
+  await expect(page.getByLabel('Authenticator code')).toBeVisible();
+  await page.getByLabel('Password').fill(PASSWORD);
+  await page.getByLabel('Authenticator code').fill('000000');
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.getByRole('alert')).toContainText('Wrong password or code');
+
+  await page.waitForTimeout(1100);
+  // A used code cannot be replayed, and both browser projects share this server: wait for a
+  // fresh 30-second step for the second project.
+  if (testInfo.project.name !== 'chromium') await page.waitForTimeout(31_000 - (Date.now() % 30_000));
+  await page.getByLabel('Password').fill(PASSWORD);
+  await page.getByLabel('Authenticator code').fill(totp(TOTP_SECRET));
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page).toHaveTitle(/Wickline$/);
 });

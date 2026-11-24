@@ -5,7 +5,8 @@
 //   - it is identical to upstream's main (an upstream fix cherry-picked ahead of a release), or
 //   - it is listed in selfhost/UPSTREAM_PATCHES.json with a reason (deliberate, documented patch).
 //
-// Usage: node selfhost/ci/check-upstream-untouched.mjs [--root <checkout>] [--base <ref>] [--upstream-main <ref>]
+// Usage: node selfhost/ci/check-upstream-untouched.mjs [--root <checkout>] [--patches <file>] [--base <ref>] [--upstream-main <ref>]
+// CI passes --patches from the trusted base branch, so a change cannot whitelist itself.
 // Needs upstream tags and main fetched locally, e.g.
 //   git fetch --no-tags https://github.com/keptaduona/wickline.git '+refs/tags/v*:refs/tags/v*' '+refs/heads/main:refs/remotes/upstream/main'
 
@@ -34,8 +35,7 @@ export const isAllowedPath = (file) => ALLOWED.some((re) => re.test(file));
 const entry = (ref, file) => { const out = tryGit('ls-tree', ref, '--', file); return out ? out.split('\t')[0] : null; };
 
 /** Reads and validates selfhost/UPSTREAM_PATCHES.json against the base release. */
-export function loadPatches(base) {
-  const file = path.join(ROOT, 'selfhost/UPSTREAM_PATCHES.json');
+export function loadPatches(base, file = arg('--patches') || path.join(ROOT, 'selfhost/UPSTREAM_PATCHES.json')) {
   if (!existsSync(file)) return new Map();
   const patches = JSON.parse(readFileSync(file, 'utf8')).patches;
   if (!Array.isArray(patches)) throw new Error('UPSTREAM_PATCHES.json: "patches" must be an array');

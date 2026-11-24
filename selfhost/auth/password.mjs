@@ -16,8 +16,12 @@ export function verifyPassword(password, stored) {
   const m = /^scrypt\$(\d+)\$(\d+)\$(\d+)\$([A-Za-z0-9+/=]+)\$([A-Za-z0-9+/=]+)$/.exec(stored || '');
   if (!m || typeof password !== 'string') return false;
   const [N, r, p] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  if (N > 2 ** 20 || r > 32 || p > 16) return false; // refuse absurd parameters (DoS)
+  if (N > 2 ** 17 || r > 16 || p > 4) return false; // refuse absurd parameters (DoS)
   const expected = Buffer.from(m[5], 'base64');
-  const actual = scryptSync(password.normalize('NFKC'), Buffer.from(m[4], 'base64'), expected.length, { N, r, p, maxmem: maxmem(N, r) });
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
+  try {
+    const actual = scryptSync(password.normalize('NFKC'), Buffer.from(m[4], 'base64'), expected.length, { N, r, p, maxmem: maxmem(N, r) });
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  } catch {
+    return false; // invalid parameters count as a failed attempt (and are throttled as one)
+  }
 }

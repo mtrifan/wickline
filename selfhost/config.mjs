@@ -4,6 +4,7 @@
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { proxyMatcher, DEFAULT_TRUSTED_PROXIES } from './http/request.mjs';
 
 export class ConfigError extends Error {
   constructor(problems) {
@@ -66,19 +67,26 @@ export function loadConfig(env = process.env, { readFile = readFileSync } = {}) 
     passwordHash: secret(env, 'WICKLINE_PASSWORD_HASH', readFile, problems),
     totpSecret: secret(env, 'WICKLINE_TOTP_SECRET', readFile, problems).replace(/[\s-]/g, '').toUpperCase(),
     trustProxy: trustProxy(env.TRUST_PROXY, problems),
+    trustedProxyIps: (env.TRUSTED_PROXY_IPS ? env.TRUSTED_PROXY_IPS.split(',').map((s) => s.trim()).filter(Boolean) : DEFAULT_TRUSTED_PROXIES),
     cookieSecure,
     sessionDays: int(env, 'SESSION_DAYS', 30, { min: 1, max: 365 }, problems),
     allowApiTokens: exposure === 'public' ? bool(env.ALLOW_API_TOKENS_PUBLIC) : bool(env.ALLOW_API_TOKENS, true),
-    bodyLimit: int(env, 'BODY_LIMIT_BYTES', 2 * 1024 * 1024, { min: 1024, max: 64 * 1024 * 1024 }, problems),
     shutdownTimeoutMs: int(env, 'SHUTDOWN_TIMEOUT_MS', 10000, { min: 1000, max: 120000 }, problems),
     logLevel: (env.LOG_LEVEL || 'info').toLowerCase(),
     testMode: bool(env.SELFHOST_TEST_MODE),
   };
 
   if (!['debug', 'info', 'warn', 'error'].includes(cfg.logLevel)) problems.push('LOG_LEVEL must be debug, info, warn or error');
-  if (cfg.passwordHash && !/^scrypt\$\d+\$\d+\$\d+\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$/.test(cfg.passwordHash)) {
-    problems.push('WICKLINE_PASSWORD_HASH is not a hash produced by `node selfhost/cli.mjs hash-password`');
+  const hm = /^scrypt\$(\d+)\$(\d+)\$(\d+)\$[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+$/.exec(cfg.passwordHash);
+  if (cfg.passwordHash && !hm) problems.push('WICKLINE_PASSWORD_HASH is not a hash produced by `node selfhost/cli.mjs hash-password`');
+  else if (hm) {
+    const [N, r, p] = [Number(hm[1]), Number(hm[2]), Number(hm[3])];
+    // Bounds keep a hostile hash from exhausting memory or CPU on every login.
+    if (N < 2 ** 14 || N > 2 ** 17 || (N & (N - 1)) !== 0 || r < 1 || r > 16 || p < 1 || p > 4) {
+      problems.push('WICKLINE_PASSWORD_HASH has unsupported scrypt parameters (N must be a power of two from 2^14 to 2^17, r 1-16, p 1-4); create it with `node selfhost/cli.mjs hash-password`');
+    }
   }
+  try { cfg.isTrustedProxy = proxyMatcher(cfg.trustedProxyIps); } catch (e) { problems.push(`TRUSTED_PROXY_IPS: ${e.message}`); }
   if (cfg.totpSecret && !/^[A-Z2-7]{16,}=*$/.test(cfg.totpSecret)) problems.push('WICKLINE_TOTP_SECRET must be base32 (16+ characters), e.g. from `node selfhost/cli.mjs totp-setup`');
   if (cfg.password && cfg.password.length < 12) problems.push('WICKLINE_PASSWORD must be at least 12 characters');
 

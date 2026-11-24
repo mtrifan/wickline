@@ -157,7 +157,7 @@ test('TOTP: required when configured, and a used code cannot be replayed', async
 });
 
 test('public mode: HTTPS via the trusted proxy only, Secure cookie, HSTS', async () => {
-  const hash = (await import('../../auth/password.mjs')).hashPassword(PASSWORD, { N: 1024 });
+  const hash = (await import('../../auth/password.mjs')).hashPassword(PASSWORD, { N: 16384 });
   const secret = generateSecret();
   const { base, app } = await start({ EXPOSURE: 'public', WICKLINE_PASSWORD: '', WICKLINE_PASSWORD_HASH: hash, WICKLINE_TOTP_SECRET: secret, TRUST_PROXY: '1' });
   const host = `127.0.0.1:${app.port}`;
@@ -175,6 +175,22 @@ test('public mode: HTTPS via the trusted proxy only, Secure cookie, HSTS', async
   assert.equal((await req(`${base}/api/health`, { headers: { ...viaProxy, cookie } })).status, 200);
   const token = app.store.createToken('x').token;
   assert.equal((await req(`${base}/api/health`, { headers: { ...viaProxy, authorization: `Bearer ${token}` } })).status, 401, 'API tokens off in public mode by default');
+});
+
+test('selfhost JSON API mutations need the X-Wickline-Selfhost header', async () => {
+  const { base } = await start();
+  const { cookie } = await login(base);
+  const without = await req(`${base}/api/selfhost/anything`, { method: 'PUT', headers: { cookie, origin: base } });
+  assert.equal(without.status, 403);
+  const withHeader = await req(`${base}/api/selfhost/anything`, { method: 'PUT', headers: { cookie, origin: base, 'x-wickline-selfhost': '1' } });
+  assert.equal(withHeader.status, 404, 'passes the gate (no such route yet)');
+});
+
+test('responses carry a report-only CSP and slow request bodies time out', async () => {
+  const { base, app } = await start();
+  const r = await req(`${base}/selfhost/login`);
+  assert.match(r.headers.get('content-security-policy-report-only'), /frame-ancestors 'none'/);
+  assert.ok(app.server.requestTimeout > 0 && app.server.requestTimeout <= 120_000, 'requests must not be allowed to trickle forever');
 });
 
 test('API tokens work as bearer credentials in private mode', async () => {

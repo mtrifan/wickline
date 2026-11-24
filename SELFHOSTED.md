@@ -61,6 +61,7 @@ Everything is set through environment variables. Each secret also accepts `<NAME
 | `WICKLINE_TOTP_SECRET` | none | Second factor. Create it with `node selfhost/cli.mjs totp-setup` and add it to an authenticator app. Required in public mode. |
 | `EXPOSURE` | `private` | `private` = LAN/Tailscale. `public` = reachable from the internet; see below. |
 | `TRUST_PROXY` | `false` | How many reverse proxies sit in front (Tailscale Serve, Nginx Proxy Manager, Caddy, Cloudflare Tunnel): `true` = 1, or a number. Only then are `X-Forwarded-*` headers believed. |
+| `TRUSTED_PROXY_IPS` | loopback and private ranges | The proxy addresses (IPs/CIDRs, comma-separated) whose `X-Forwarded-*` headers are believed. Requests arriving directly from any other address are treated as direct clients. Set it to your proxy's address, especially in public mode, e.g. `172.18.0.5` for a proxy container or `100.64.0.0/10` for Tailscale. |
 | `COOKIE_SECURE` | `auto` | `auto` marks the session cookie `Secure` when the request arrived over HTTPS. `true` forces it. |
 | `SESSION_DAYS` | `30` | A session expires after this many days without use. |
 | `ALLOW_API_TOKENS` | `true` | Bearer tokens for scripts (`cli.mjs token create`). In public mode they are off unless `ALLOW_API_TOKENS_PUBLIC=true`. |
@@ -81,7 +82,7 @@ Leave `EXPOSURE=private`. Over Tailscale, [Tailscale Serve](https://tailscale.co
 tailscale serve --bg 5173        # on the Unraid host
 ```
 
-Then set `TRUST_PROXY=true`, so sessions use secure cookies.
+Then set `TRUST_PROXY=true`, so sessions use secure cookies. The default `TRUSTED_PROXY_IPS` already covers Tailscale Serve, which connects from the host.
 
 ### From the internet (`EXPOSURE=public`)
 
@@ -91,6 +92,8 @@ Public mode refuses to start unless all of these are set:
 - `WICKLINE_PASSWORD_HASH`. A plain password is refused.
 - `WICKLINE_TOTP_SECRET`, for two-factor login.
 - `TRUST_PROXY`. TLS ends at your proxy, and requests that did not arrive over HTTPS are refused.
+
+Also set `TRUSTED_PROXY_IPS` to your proxy's address, and do not publish port 5173 anywhere else. Forwarded headers are only believed from that address, so a client reaching the port directly cannot pretend to be HTTPS or hide its IP from the login throttle.
 
 In public mode:
 - cookies are always `Secure`, and HSTS is sent;
@@ -109,10 +112,12 @@ wickline.example.com {
 
 - **Login covers everything** except `/api/health/ready`, the container healthcheck, which returns only `{"ok":true}`. That includes the app, its market-data API, and upstream's `/api/health`.
 - **Failed logins** get an increasing delay per client, never a lockout. In public mode a short global spacing is added.
-- **Cross-site requests:** every state-changing request must carry a same-origin `Origin` header, and session cookies are `HttpOnly; SameSite=Lax`.
+- **Cross-site requests:** every state-changing request must carry a same-origin `Origin` header, and session cookies are `HttpOnly; SameSite=Lax`. Changes through the self-hosting JSON API also need an `X-Wickline-Selfhost: 1` header.
+- **Slow clients:** a request must arrive within 60 seconds. Long-lived streams are not affected.
 - **Upstream's `Access-Control-Allow-Origin: *`** is removed, so other sites cannot read the API.
 - **Stored secrets:** sessions and API tokens are kept as SHA-256 digests, the password as scrypt. TOTP codes cannot be reused.
-- **Audit log:** logins, failures and logouts are recorded in the database.
+- **Audit log:** logins, failures, logouts and API token use (at most hourly per token) are recorded in the database.
+- **Content security policy:** sent in report-only mode.
 
 ## Administration
 
@@ -136,7 +141,7 @@ See [UPGRADE.md](UPGRADE.md). In short: everything lives in the `/data` volume (
 
 - Single user.
 - Data sync and server-side alerts arrive in Phases 2 and 3. Until then, user data stays in each browser, as upstream.
-- The content security policy is not enforced yet, because upstream relies on an inline script and `unsafe-eval` in its script sandbox.
+- The content security policy is report-only, because upstream relies on an inline script and `unsafe-eval` in its script sandbox.
 
 ## Licence
 

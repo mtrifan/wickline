@@ -41,7 +41,7 @@ jobs:
         run: |
           bytes=$(docker image inspect wickline-selfhost:ci --format '{{.Size}}')
           echo "image size: $((bytes / 1024 / 1024)) MB"
-          [ "$bytes" -lt $((260 * 1024 * 1024)) ] || { echo "::error::image larger than 260 MB"; exit 1; }
+          [ "$bytes" -lt $((250 * 1024 * 1024)) ] || { echo "::error::image larger than 250 MB"; exit 1; }
       - name: Smoke test
         env:
           IMAGE: wickline-selfhost:ci

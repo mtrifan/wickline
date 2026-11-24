@@ -16,7 +16,7 @@ export function createAuthStore(db, { sessionDays = 30, now = () => Date.now() }
     deleteAllSessions: db.prepare('DELETE FROM sessions'),
     purge: db.prepare('DELETE FROM sessions WHERE expires_at < ?'),
     insertToken: db.prepare('INSERT INTO api_tokens (id, hash, label, created_at) VALUES (?, ?, ?, ?)'),
-    tokenByHash: db.prepare('SELECT id, label FROM api_tokens WHERE hash = ?'),
+    tokenByHash: db.prepare('SELECT id, label, last_used_at FROM api_tokens WHERE hash = ?'),
     useToken: db.prepare('UPDATE api_tokens SET last_used_at = ? WHERE id = ?'),
     listTokens: db.prepare('SELECT id, label, created_at, last_used_at FROM api_tokens ORDER BY created_at'),
     deleteToken: db.prepare('DELETE FROM api_tokens WHERE id = ?'),
@@ -58,8 +58,11 @@ export function createAuthStore(db, { sessionDays = 30, now = () => Date.now() }
     checkToken(token) {
       if (!token || !token.startsWith('wl_') || token.length > 200) return null;
       const row = q.tokenByHash.get(sha256(token));
-      if (row) q.useToken.run(now(), row.id);
-      return row || null;
+      if (!row) return null;
+      // Audited at most once an hour per token, so scripts do not flood the log.
+      if (!row.last_used_at || now() - row.last_used_at > HOUR) q.audit.run(now(), 'token.use', '', row.id);
+      q.useToken.run(now(), row.id);
+      return { id: row.id, label: row.label };
     },
     listTokens: () => q.listTokens.all(),
     deleteToken: (id) => q.deleteToken.run(id).changes > 0,

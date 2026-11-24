@@ -25,7 +25,7 @@ test('real migrations are numbered and apply to an empty database', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('a new migration backs up the existing database first; a newer database is refused', () => {
+test('a new migration backs up the existing database first; a newer database is refused', async () => {
   const dir = tmp();
   const mig = path.join(dir, 'mig');
   mkdirSync(mig);
@@ -42,9 +42,13 @@ test('a new migration backs up the existing database first; a newer database is 
     assert.ok(upgraded.backup && readdirSync(path.join(dir, 'data', 'backups')).some((f) => f.startsWith('pre-migrate-')));
     upgraded.db.close();
 
-    // The backup holds the pre-upgrade data.
-    const restored = openDatabase(path.join(dir, 'restored'), { migrationsDir: REAL });
-    restored.db.close();
+    // The backup holds the pre-upgrade data and schema.
+    const { DatabaseSync } = await import('node:sqlite');
+    const snap = new DatabaseSync(upgraded.backup, { readOnly: true });
+    assert.equal(snap.prepare("SELECT count(*) n FROM audit_log WHERE event = 'before-upgrade'").get().n, 1, 'backup contains the data');
+    assert.equal(snap.prepare("SELECT count(*) n FROM sqlite_master WHERE name = 'synthetic'").get().n, 0, 'backup predates the migration');
+    assert.equal(snap.prepare('PRAGMA user_version').get().user_version, loadMigrations(REAL).length);
+    snap.close();
 
     // Running the older code (real migrations only) against the upgraded database is refused.
     assert.throws(() => openDatabase(path.join(dir, 'data'), { migrationsDir: REAL }), DowngradeError);
@@ -86,6 +90,12 @@ test('auth store: hashed sessions with sliding expiry, tokens, TOTP counter', ()
     assert.match(t.token, /^wl_/);
     assert.equal(s.checkToken(t.token).label, 'ci');
     assert.equal(s.checkToken('wl_wrong'), null);
+    const audits = () => db.prepare("SELECT count(*) n FROM audit_log WHERE event = 'token.use'").get().n;
+    const before = audits();
+    s.checkToken(t.token); s.checkToken(t.token);
+    assert.equal(audits(), before, 'token use audited at most once an hour');
+    now += 2 * 3600_000; s.checkToken(t.token);
+    assert.equal(audits(), before + 1);
     assert.ok(s.deleteToken(t.id));
     assert.equal(s.checkToken(t.token), null);
 

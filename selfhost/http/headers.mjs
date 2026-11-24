@@ -42,6 +42,9 @@ export function securityHeaders(res, { hsts = false } = {}) {
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
   if (hsts) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+  // Report-only for now: upstream needs an inline script and 'unsafe-eval' (its script sandbox).
+  // Violations show in the browser console; enforcement comes once upstream allows it.
+  res.setHeader('Content-Security-Policy-Report-Only', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; connect-src 'self' https: wss:; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'");
 }
 
 export function sendJson(res, status, body, extra = {}) {

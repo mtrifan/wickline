@@ -61,7 +61,7 @@ jobs:
         with:
           node-version: 24
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - run: npm ci --no-audit --no-fund
+      - run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: selfhost
       - run: npx playwright install --with-deps chromium webkit
         working-directory: selfhost
@@ -97,12 +97,7 @@ jobs:
       - name: Fetch upstream releases and main
         working-directory: candidate
         run: git fetch --no-tags https://github.com/keptaduona/wickline.git '+refs/tags/v*:refs/tags/v*' '+refs/heads/main:refs/remotes/upstream/main'
-      - name: Check
-        run: |
-          if [ -f trusted/selfhost/ci/check-upstream-untouched.mjs ]; then
-            node trusted/selfhost/ci/check-upstream-untouched.mjs --root candidate
-          else
-            # Bootstrap only: the base branch predates the checker (the PR that introduces it).
-            echo "::warning::Base branch has no trusted checker yet; using the candidate's copy (bootstrap)"
-            node candidate/selfhost/ci/check-upstream-untouched.mjs --root candidate
-          fi
+      # Checker and its allow-list (UPSTREAM_PATCHES.json) both come from the trusted base, so a
+      # pull request can neither weaken the check nor whitelist its own upstream edits. Changing
+      # the allow-list therefore needs an owner merge (see UPSTREAM.md).
+      - run: node trusted/selfhost/ci/check-upstream-untouched.mjs --root candidate --patches trusted/selfhost/UPSTREAM_PATCHES.json

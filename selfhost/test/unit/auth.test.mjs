@@ -11,6 +11,7 @@ test('scrypt hashes verify, reject wrong passwords and absurd parameters', () =>
   assert.ok(!verifyPassword('correct horse batterY', h));
   assert.ok(!verifyPassword('correct horse battery', 'plain'));
   assert.ok(!verifyPassword('x', h.replace('$1024$', '$9999999$')), 'refuses huge N');
+  assert.equal(verifyPassword('x', h.replace('$1024$', '$1000$')), false, 'invalid N (not a power of two) is a failed attempt, not an exception');
   assert.throws(() => hashPassword('short'));
   assert.notEqual(hashPassword('correct horse battery', { N: 1024 }), h, 'salted');
 });

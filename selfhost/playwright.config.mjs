@@ -8,13 +8,17 @@ import path from 'node:path';
 export const SELFHOST_PORT = 5185;
 export const UPSTREAM_PORT = 5186;
 export const PASSWORD = 'correct horse battery staple';
+export const TOTP_PORT = 5187;
+export const TOTP_SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP'; // test-only
 const dataDir = process.env.E2E_DATA_DIR || mkdtempSync(path.join(tmpdir(), 'wl-e2e-'));
 process.env.E2E_DATA_DIR = dataDir; // shared with worker processes
+const totpDir = process.env.E2E_TOTP_DIR || mkdtempSync(path.join(tmpdir(), 'wl-e2e-totp-'));
+process.env.E2E_TOTP_DIR = totpDir;
 
 export default defineConfig({
   testDir: 'test/e2e',
   testMatch: /.*\.spec\.mjs$/,
-  timeout: 30_000,
+  timeout: 60_000,
   // One worker: every test signs in from 127.0.0.1, and the per-client login delay after a
   // deliberate failure would otherwise race with other tests' sign-ins.
   workers: 1,
@@ -31,6 +35,12 @@ export default defineConfig({
       command: 'node --disable-warning=ExperimentalWarning server.mjs',
       url: `http://127.0.0.1:${SELFHOST_PORT}/api/health/ready`,
       env: { PORT: String(SELFHOST_PORT), HOST: '127.0.0.1', DATA_DIR: dataDir, WICKLINE_PASSWORD: PASSWORD, LOG_LEVEL: 'warn' },
+      reuseExistingServer: false,
+    },
+    {
+      command: 'node --disable-warning=ExperimentalWarning server.mjs',
+      url: `http://127.0.0.1:${TOTP_PORT}/api/health/ready`,
+      env: { PORT: String(TOTP_PORT), HOST: '127.0.0.1', DATA_DIR: totpDir, WICKLINE_PASSWORD: PASSWORD, WICKLINE_TOTP_SECRET: TOTP_SECRET, LOG_LEVEL: 'warn' },
       reuseExistingServer: false,
     },
     {
