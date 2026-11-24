@@ -142,6 +142,9 @@ export function prBody(r, validation) {
       ? r.points.map((p) => `- **${p.id}**: ${p.contract}\n  - files: ${p.files.map(code).join(', ')}\n  - test: \`selfhost/${p.test}\``).join('\n')
       : '_none — no upstream file the self-hosted edition depends on changed_',
     '',
+    '### Commits on this branch that are not from upstream',
+    r.extraCommits?.length ? `${list(r.extraCommits, (c) => `- ${code(c)}`)}\n\n> Review these as ordinary changes: they were pushed to the integration branch, not brought in by upstream.` : '_none_',
+    '',
     '### Upstream workflow files added or changed',
     r.workflows.length ? `${list(r.workflows)}\n\n> New upstream workflows are active by default in this fork. Disable them under Actions unless needed (see UPSTREAM.md).` : '_none_',
     '',
@@ -325,9 +328,9 @@ function prepare() {
 
   // Mirror check here, where upstream main is already fetched: workflow files the fast-forward of
   // this fork's main would bring in.
-  if (tryGit('fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main') !== null) {
-    report.mirrorWorkflows = upstreamWorkflowChanges(git('diff', '--name-only', 'refs/remotes/origin/main', 'refs/remotes/upstream/main').split('\n').filter(Boolean));
-  }
+  // Fails the job (fail closed) if this fork's main cannot be fetched.
+  git('fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main');
+  report.mirrorWorkflows = upstreamWorkflowChanges(git('diff', '--name-only', 'refs/remotes/origin/main', 'refs/remotes/upstream/main').split('\n').filter(Boolean));
 
   // Duplicate guard: an open PR for the branch, or an open issue carrying this version's marker.
   if (!integrated) {
@@ -348,6 +351,10 @@ function prepare() {
     }
     git('switch', '--quiet', '-C', report.branch, report.remoteBranchSha ? remoteBranch : baseRef);
     const alreadyMerged = tryGit('merge-base', '--is-ancestor', `refs/tags/${version}`, 'HEAD') !== null;
+    // Commits on a reused branch that are neither upstream's nor already in production: shown in the PR.
+    report.extraCommits = report.remoteBranchSha
+      ? git('log', '--no-merges', '--format=%h %an: %s', report.remoteBranchSha, '--not', baseRef, `refs/tags/${version}`).split('\n').filter(Boolean).slice(0, 100)
+      : [];
     const merged = alreadyMerged ? 'already' : tryRun('git', ['-c', 'user.name=selfhost-upstream-sync', '-c', 'user.email=selfhost-upstream-sync@users.noreply.github.com',
       'merge', '--no-ff', '--no-edit', '-m', `chore(upstream): integrate ${version}`, `refs/tags/${version}`]);
     if (merged === null) {
@@ -422,7 +429,13 @@ function publish() {
   // 2. main mirrors upstream/main: fast-forward only, branch only (tags are never pushed).
   // A mirror push that adds or changes workflow files would activate upstream workflow code here,
   // so those updates wait for the owner (the token can push workflow files).
-  const mirrorWorkflows = r.mirrorWorkflows || [];
+  // Re-checked here against the exact commit being pushed; a missing check counts as a change.
+  let mirrorWorkflows = Array.isArray(r.mirrorWorkflows) ? r.mirrorWorkflows : ['(mirror check missing from report)'];
+  if (!mirrorWorkflows.length && !dry) {
+    git('fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main');
+    git('fetch', '--no-tags', '--quiet', `https://github.com/${r.upstreamRepo}.git`, '+refs/heads/main:refs/remotes/upstream/main');
+    mirrorWorkflows = upstreamWorkflowChanges(git('diff', '--name-only', 'refs/remotes/origin/main', r.upstreamMain).split('\n').filter(Boolean));
+  }
   let ff = 'skipped';
   if (mirrorWorkflows.length) {
     const existing = ghJson('issue', 'list', '--repo', repo, '--state', 'open', '--label', LABEL, '--json', 'number,body').find((i) => hasMarker(i.body, 'mirror-workflows'));
@@ -430,8 +443,6 @@ function publish() {
       body: [marker('mirror-workflows', 'main'), 'Upstream `main` changes workflow files, so the bot did not fast-forward this fork\'s `main` (that would run new upstream workflow code here).', '', list(mirrorWorkflows), '',
         'Review the changes, then mirror by hand and keep non-`selfhost-*` workflows disabled:', '```sh', `git fetch --no-tags https://github.com/${r.upstreamRepo}.git main`, 'git push origin FETCH_HEAD:refs/heads/main', '```'].join('\n') });
   } else if (!dry) {
-    // Fetching transfers objects only; nothing from upstream is executed here.
-    git('fetch', '--no-tags', '--quiet', `https://github.com/${r.upstreamRepo}.git`, '+refs/heads/main:refs/remotes/upstream/main');
     ff = tryGit('push', 'origin', `${r.upstreamMain}:refs/heads/main`);
   }
   if (ff === null) {
