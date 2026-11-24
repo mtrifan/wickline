@@ -1,0 +1,42 @@
+# Wickline Self-Hosted with Docker Compose. See SELFHOSTED.md for the full guide.
+#
+# 1. mkdir -p data secrets && sudo chown 99:100 data
+# 2. Create the password hash (the hash contains "$", so it goes in a file, not in this YAML):
+#      docker run --rm -it ghcr.io/mtrifan/wickline:stable node selfhost/cli.mjs hash-password > secrets/password_hash
+#      chmod 644 secrets/password_hash
+# 3. docker compose up -d   →   http://<host>:5173
+name: wickline
+
+services:
+  wickline:
+    image: ghcr.io/mtrifan/wickline:stable
+    # To build from this repository instead:  build: { context: .., dockerfile: selfhost/Dockerfile }
+    container_name: wickline
+    restart: unless-stopped
+    init: true
+    ports:
+      - "5173:5173"
+    environment:
+      WICKLINE_PASSWORD_HASH_FILE: /run/secrets/password_hash
+      # Second factor (required with EXPOSURE=public): node selfhost/cli.mjs totp-setup
+      # WICKLINE_TOTP_SECRET_FILE: /run/secrets/totp_secret
+      # EXPOSURE: public            # reachable from the internet (HTTPS proxy + TOTP required)
+      # TRUST_PROXY: "true"         # behind Tailscale Serve, Caddy, Nginx Proxy Manager, Cloudflare Tunnel…
+      # WICKLINE_PROXY: socks5://host:1080   # outbound proxy for market data, if needed
+      TZ: ${TZ:-UTC}
+    secrets:
+      - password_hash
+    volumes:
+      - ./data:/data
+    # Hardening: nothing but /data (and a tmpfs) is writable; no Linux capabilities.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+secrets:
+  password_hash:
+    file: ./secrets/password_hash
