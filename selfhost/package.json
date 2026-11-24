@@ -13,6 +13,10 @@
     "test:unit": "node --disable-warning=ExperimentalWarning --test --test-reporter=spec \"test/unit/**/*.test.mjs\"",
     "check:upstream-untouched": "node ci/check-upstream-untouched.mjs",
     "test:api": "node --disable-warning=ExperimentalWarning --test --test-reporter=spec \"test/api/**/*.test.mjs\"",
-    "start": "node --disable-warning=ExperimentalWarning server.mjs"
+    "start": "node --disable-warning=ExperimentalWarning server.mjs",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1"
   }
 }

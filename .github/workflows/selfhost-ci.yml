@@ -50,6 +50,30 @@ jobs:
       - run: npm test
         working-directory: selfhost
 
+  e2e:
+    name: browser tests (chromium, webkit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm ci --no-audit --no-fund
+        working-directory: selfhost
+      - run: npx playwright install --with-deps chromium webkit
+        working-directory: selfhost
+      - run: npx playwright test
+        working-directory: selfhost
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-traces
+          path: selfhost/test-results/
+          retention-days: 7
+
   upstream-untouched:
     name: no upstream file modified
     runs-on: ubuntu-latest
