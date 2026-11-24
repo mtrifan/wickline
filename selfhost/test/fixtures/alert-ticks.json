@@ -1,0 +1,19 @@
+{
+  "$comment": "Tick sequences and the tick index at which each alert fires (null = never). Shared by the upstream AlertManager.check contract test and the server-side evaluator (Phase 3), so the two can never drift apart.",
+  "cases": [
+    { "name": "up: crosses from below", "alert": { "condition": "up", "price": 100 }, "ticks": [99, 100.5], "firesAt": 1 },
+    { "name": "up: touching the level counts", "alert": { "condition": "up", "price": 100 }, "ticks": [99, 100], "firesAt": 1 },
+    { "name": "up: starting above never fires", "alert": { "condition": "up", "price": 100 }, "ticks": [101, 102, 103], "firesAt": null },
+    { "name": "up: falling through does not fire", "alert": { "condition": "up", "price": 100 }, "ticks": [101, 99], "firesAt": null },
+    { "name": "down: crosses from above", "alert": { "condition": "down", "price": 100 }, "ticks": [101, 99.5], "firesAt": 1 },
+    { "name": "down: rising through does not fire", "alert": { "condition": "down", "price": 100 }, "ticks": [99, 101], "firesAt": null },
+    { "name": "cross: either direction", "alert": { "condition": "cross", "price": 100 }, "ticks": [101, 99], "firesAt": 1 },
+    { "name": "cross: upward too", "alert": { "condition": "cross", "price": 100 }, "ticks": [99, 101], "firesAt": 1 },
+    { "name": "first tick is ignored even beyond the level", "alert": { "condition": "up", "price": 100 }, "ticks": [150], "firesAt": null },
+    { "name": "repeated price is ignored", "alert": { "condition": "up", "price": 100 }, "ticks": [99, 99, 99, 100], "firesAt": 3 },
+    { "name": "a gap straight through the level fires", "alert": { "condition": "up", "price": 100 }, "ticks": [90, 130], "firesAt": 1 },
+    { "name": "fires once, then stays inactive", "alert": { "condition": "cross", "price": 100 }, "ticks": [99, 101, 99, 101], "firesAt": 1 },
+    { "name": "non-finite prices are skipped", "alert": { "condition": "up", "price": 100 }, "ticks": [99, "NaN", 101], "firesAt": 2 },
+    { "name": "sitting exactly on the level then moving away does not fire", "alert": { "condition": "up", "price": 100 }, "ticks": [100, 101], "firesAt": null }
+  ]
+}

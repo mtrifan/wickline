@@ -1,0 +1,84 @@
+# Self-hosted edition: tests on every pull request and on pushes to the production branch.
+# Upstream's own workflows (release, pages, community) are disabled in this fork's settings and
+# left byte-identical to upstream; see UPSTREAM.md.
+name: selfhost-ci
+
+on:
+  pull_request:
+  push:
+    branches: [selfhosted]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: selfhost-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  upstream-tests:
+    name: upstream tests (unchanged)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # --ignore-scripts: no Electron download; upstream's unit tests do not need it.
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm test
+
+  selfhost-tests:
+    name: selfhost tests (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm test
+        working-directory: selfhost
+
+  upstream-untouched:
+    name: no upstream file modified
+    runs-on: ubuntu-latest
+    steps:
+      # The checker runs from the trusted base branch, never from the change under test, so a pull
+      # request cannot weaken the check that guards it.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref || 'selfhosted' }}
+          persist-credentials: false
+          path: trusted
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          path: candidate
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Upstream tags are fetched only into this runner, never pushed to the fork.
+      - name: Fetch upstream releases and main
+        working-directory: candidate
+        run: git fetch --no-tags https://github.com/keptaduona/wickline.git '+refs/tags/v*:refs/tags/v*' '+refs/heads/main:refs/remotes/upstream/main'
+      - name: Check
+        run: |
+          if [ -f trusted/selfhost/ci/check-upstream-untouched.mjs ]; then
+            node trusted/selfhost/ci/check-upstream-untouched.mjs --root candidate
+          else
+            # Bootstrap only: the base branch predates the checker (the PR that introduces it).
+            echo "::warning::Base branch has no trusted checker yet; using the candidate's copy (bootstrap)"
+            node candidate/selfhost/ci/check-upstream-untouched.mjs --root candidate
+          fi
