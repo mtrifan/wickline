@@ -11,7 +11,7 @@
 // commit subjects, file names) can never become a command.
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -70,10 +70,38 @@ export const upstreamWorkflowChanges = (changedFiles) =>
  */
 export function sanitizeUpstreamText(text, upstreamRepo, max = 6000) {
   let s = String(text || '').replace(/\r\n/g, '\n');
-  s = s.replace(/(^|[^\w`])@([A-Za-z0-9][A-Za-z0-9-]{0,38})/g, '$1@​$2');
+  s = s.replace(/(^|[^\w`])@([A-Za-z0-9][A-Za-z0-9-]{0,38})/g, '$1@\u200b$2');
   s = s.replace(/(^|[\s(])#(\d+)\b/g, `$1${upstreamRepo}#$2`);
-  s = s.replace(/<!--[\s\S]*?-->/g, '');
+  // Strip HTML comments until none are left (a single pass can be defeated by nesting), then
+  // defang the marker prefix so upstream text can never imitate a duplicate-guard marker.
+  for (let prev = null; prev !== s;) { prev = s; s = s.replace(/<!--[\s\S]*?-->/g, ''); }
+  s = s.replace(/<!--/g, '&lt;!--').replace(new RegExp(MARKER_PREFIX, 'gi'), `${MARKER_PREFIX.slice(0, 8)}\u200b${MARKER_PREFIX.slice(8)}`);
   return s.length > max ? `${s.slice(0, max)}\n\n… (truncated)` : s;
+}
+
+/** True when `body` was written by this bot for `kind` (and `version`, if given): marker at the very start. */
+export const hasMarker = (body, kind, version) =>
+  typeof body === 'string' && (version ? body.startsWith(marker(kind, version)) : body.startsWith(`<!-- ${MARKER_PREFIX}:${kind}:`));
+
+/**
+ * Validation verdict from GitHub's own step outcomes (passed in by the workflow through `needs`
+ * outputs), never from files upstream code could have written.
+ */
+export const VALIDATION_CHECKS = [
+  ['npmci', 'npm ci --ignore-scripts'],
+  ['upstream', 'upstream tests (npm test)'],
+  ['selfhost', 'selfhost unit + contract tests'],
+  ['untouched', 'no upstream file modified'],
+];
+export function validationFromOutcomes(outcomes, runUrl) {
+  const rows = VALIDATION_CHECKS.map(([id, label]) => ({ id, label, outcome: outcomes[id] || 'not run' }));
+  const ok = rows.every((r) => r.outcome === 'success');
+  const summary = [
+    '| Check | Result |', '|---|---|',
+    ...rows.map((r) => `| ${r.label} | ${r.outcome === 'success' ? '✅ success' : `❌ ${r.outcome}`} |`),
+    '', runUrl ? `Logs: ${runUrl}` : '',
+  ].join('\n').trim();
+  return { ok, summary, rows };
 }
 
 const list = (items, fmt = (x) => `- \`${x}\``) => (items.length ? items.map(fmt).join('\n') : '_none_');
@@ -133,6 +161,35 @@ export function conflictBody(r) {
     'npm ci --ignore-scripts && npm test && (cd selfhost && npm test) && node selfhost/ci/check-upstream-untouched.mjs',
     `git push -u origin integrate/upstream-${r.version}   # then open a PR into ${r.base}`,
     '```',
+    '',
+    '### Upstream release notes',
+    r.notes ? sanitizeUpstreamText(r.notes, r.upstreamRepo) : '_none published_',
+  ].join('\n');
+}
+
+export function workflowsChangedBody(r) {
+  return [
+    marker('workflows', r.version),
+    `Upstream **${r.version}** changes GitHub Actions workflow files. The bot does not push upstream workflow changes, because that would run new upstream workflow code in this repository. Integrate this release by hand.`,
+    '',
+    '### Workflow files changed upstream',
+    list(r.workflows),
+    '',
+    '### Steps',
+    '1. Review each workflow change upstream.',
+    '2. Integrate locally (commands below) and push the branch from your own machine.',
+    '3. After merging, keep every non-`selfhost-*` workflow disabled under **Actions** unless deliberately wanted.',
+    '',
+    '```sh',
+    `git fetch --no-tags https://github.com/${r.upstreamRepo}.git 'refs/tags/${r.version}:refs/tags/${r.version}'`,
+    `git switch -c integrate/upstream-${r.version} origin/${r.base}`,
+    `git merge --no-ff ${r.version}`,
+    'npm ci --ignore-scripts && npm test && (cd selfhost && npm test) && node selfhost/ci/check-upstream-untouched.mjs',
+    `git push -u origin integrate/upstream-${r.version}`,
+    '```',
+    '',
+    '### Integration points touched',
+    list(r.points.map((p) => `${p.id} → selfhost/${p.test}`)),
     '',
     '### Upstream release notes',
     r.notes ? sanitizeUpstreamText(r.notes, r.upstreamRepo) : '_none published_',
@@ -243,7 +300,7 @@ function prepare() {
     const prs = ghJson('pr', 'list', '--repo', repo, '--state', 'open', '--head', report.branch, '--json', 'number,url');
     report.existing.pr = prs[0] || null;
     const issues = ghJson('issue', 'list', '--repo', repo, '--state', 'open', '--label', LABEL, '--limit', '100', '--json', 'number,url,body');
-    report.existing.issue = issues.find((i) => i.body?.includes(`${MARKER_PREFIX}:conflict:${version}`) || i.body?.includes(`${MARKER_PREFIX}:validation:${version}`)) || null;
+    report.existing.issue = issues.find((i) => ['conflict', 'validation', 'workflows'].some((k) => hasMarker(i.body, k, version))) || null;
   }
 
   if (!integrated) {
@@ -254,6 +311,10 @@ function prepare() {
       report.conflicts = git('diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean);
       tryGit('merge', '--abort');
       report.status = 'conflict';
+    } else if (report.workflows.length) {
+      // Upstream changed its workflow files. Pushing them would let new upstream workflow code run
+      // in this repository, so this release is integrated by hand (see UPSTREAM.md).
+      report.status = 'workflows-changed';
     } else {
       report.status = 'merged';
       git('bundle', 'create', path.join(out, 'merged.bundle'), `refs/heads/${report.branch}`);
@@ -294,8 +355,10 @@ function publish() {
   const dir = path.resolve(o.in || 'sync-out');
   const dry = o['dry-run'] === true || o['dry-run'] === 'true';
   const r = JSON.parse(readFileSync(path.join(dir, 'report.json'), 'utf8'));
-  const validationFile = path.join(dir, 'validation.json');
-  const validation = existsSync(validationFile) ? JSON.parse(readFileSync(validationFile, 'utf8')) : { ok: false, summary: '_validation did not run_' };
+  // Outcomes come from the workflow (`needs.validate.outputs`), set by the runner itself.
+  const validation = validationFromOutcomes({
+    npmci: process.env.V_NPMCI, upstream: process.env.V_UPSTREAM, selfhost: process.env.V_SELFHOST, untouched: process.env.V_UNTOUCHED,
+  }, process.env.RUN_URL);
   const repo = r.repo;
 
   if (!dry) tryRun('gh', ['label', 'create', LABEL, '--repo', repo, '--color', '0E8A16', '--description', 'Automated upstream integration', '--force']);
@@ -304,7 +367,7 @@ function publish() {
   const problems = assertSettings(repo);
   if (problems.length) {
     const body = [marker('settings', 'current'), 'The upstream sync requires these repository settings:', '', ...problems.map((p) => `- ${p}`)].join('\n');
-    const existing = ghJson('issue', 'list', '--repo', repo, '--state', 'open', '--label', LABEL, '--json', 'number,body').find((i) => i.body?.includes(`${MARKER_PREFIX}:settings:`));
+    const existing = ghJson('issue', 'list', '--repo', repo, '--state', 'open', '--label', LABEL, '--json', 'number,body').find((i) => hasMarker(i.body, 'settings'));
     upsertIssue({ repo, title: 'Upstream sync: repository settings need attention', body, existing, dry });
     console.error(problems.join('\n'));
     process.exitCode = 1;
@@ -314,7 +377,7 @@ function publish() {
   git('fetch', '--no-tags', '--quiet', `https://github.com/${r.upstreamRepo}.git`, '+refs/heads/main:refs/remotes/upstream/main');
   const ff = dry ? 'skipped' : tryGit('push', 'origin', `${r.upstreamMain}:refs/heads/main`);
   if (ff === null) {
-    const existing = ghJson('issue', 'list', '--repo', repo, '--state', 'open', '--label', LABEL, '--json', 'number,body').find((i) => i.body?.includes(`${MARKER_PREFIX}:mirror:`));
+    const existing = ghJson('issue', 'list', '--repo', repo, '--state', 'open', '--label', LABEL, '--json', 'number,body').find((i) => hasMarker(i.body, 'mirror'));
     upsertIssue({ repo, title: 'Upstream sync: main cannot be fast-forwarded', existing, dry,
       body: `${marker('mirror', 'main')}\nUpstream \`main\` is not a fast-forward of this fork's \`main\` (upstream rewrote history, or \`main\` was committed to). Inspect and reset \`main\` to upstream manually.` });
     process.exitCode = 1;
@@ -342,6 +405,8 @@ function publish() {
     } else {
       upsertIssue({ repo, title: `Upstream ${r.version}: validation failed`, body: validationFailedBody(r, validation, branchUrl), existing: r.existing.issue, dry });
     }
+  } else if (r.status === 'workflows-changed') {
+    upsertIssue({ repo, title: `Upstream ${r.version}: workflow files changed (manual integration)`, body: workflowsChangedBody(r), existing: r.existing.issue, dry });
   } else if (r.status === 'conflict') {
     upsertIssue({ repo, title: `Upstream ${r.version}: merge conflicts`, body: conflictBody(r), existing: r.existing.issue, dry });
   } else {
@@ -349,7 +414,7 @@ function publish() {
   }
 
   // 4. Rolling issue for unreleased upstream commits.
-  const rolling = ghJson('issue', 'list', '--repo', repo, '--state', 'open', '--label', LABEL, '--json', 'number,body').find((i) => i.body?.includes(`${MARKER_PREFIX}:unreleased:`));
+  const rolling = ghJson('issue', 'list', '--repo', repo, '--state', 'open', '--label', LABEL, '--json', 'number,body').find((i) => hasMarker(i.body, 'unreleased'));
   if (r.unreleased.length) upsertIssue({ repo, title: ROLLING_TITLE, body: rollingBody(r), existing: rolling, dry });
   else if (rolling && !dry) gh('issue', 'close', String(rolling.number), '--repo', repo, '--comment', `Covered by upstream ${r.version}.`);
 

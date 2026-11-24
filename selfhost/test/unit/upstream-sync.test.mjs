@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   parseVersion, compareVersions, newestStable, marker, touchedPoints, upstreamWorkflowChanges,
-  sanitizeUpstreamText, prBody, conflictBody, rollingBody,
+  sanitizeUpstreamText, prBody, conflictBody, rollingBody, hasMarker, validationFromOutcomes, workflowsChangedBody,
 } from '../../ci/upstream-sync.mjs';
 
 test('versions sort numerically and pre-releases rank below their release', () => {
@@ -62,4 +62,37 @@ test('conflict and rolling bodies carry their markers', () => {
   assert.ok(conflictBody(report).startsWith(marker('conflict', 'v0.2.0')));
   assert.ok(conflictBody(report).includes('git merge --no-ff v0.2.0'));
   assert.ok(rollingBody(report).startsWith(marker('unreleased', 'rolling')));
+});
+
+test('nested comments cannot reassemble a marker, and the prefix is defanged', () => {
+  for (const evil of ['<!<!-- -->-- upstream-sync:pr:v0.2.0 -->', '<!-<!-- x -->- upstream-sync:conflict:v0.2.0 -->', 'UPSTREAM-SYNC:pr:v0.2.0', '<!-- upstream-sync:pr:v0.2.0']) {
+    const s = sanitizeUpstreamText(evil, 'u/r');
+    assert.ok(!/upstream-sync:/i.test(s), `${evil} -> ${s}`);
+    assert.ok(!s.includes('<!--'), `${evil} -> ${s}`);
+  }
+});
+
+test('markers only count at the very start of a body', () => {
+  const ours = `${marker('conflict', 'v0.2.0')}\nbody`;
+  assert.ok(hasMarker(ours, 'conflict', 'v0.2.0'));
+  assert.ok(hasMarker(ours, 'conflict'));
+  assert.ok(!hasMarker(`quoted: ${ours}`, 'conflict', 'v0.2.0'));
+  assert.ok(!hasMarker(ours, 'pr', 'v0.2.0'));
+  assert.ok(!hasMarker(null, 'pr'));
+});
+
+test('validation passes only when every runner-reported step succeeded', () => {
+  const all = { npmci: 'success', upstream: 'success', selfhost: 'success', untouched: 'success' };
+  assert.equal(validationFromOutcomes(all).ok, true);
+  assert.equal(validationFromOutcomes({ ...all, upstream: 'failure' }).ok, false);
+  assert.equal(validationFromOutcomes({ ...all, untouched: undefined }).ok, false, 'a missing outcome is not a pass');
+  assert.equal(validationFromOutcomes({}).ok, false, 'validation that never ran is not a pass');
+  const v = validationFromOutcomes({ ...all, selfhost: 'failure' }, 'https://run');
+  assert.ok(v.summary.includes('❌ failure') && v.summary.includes('https://run'));
+});
+
+test('workflow-change issue explains the manual path', () => {
+  const b = workflowsChangedBody(report);
+  assert.ok(b.startsWith(marker('workflows', 'v0.2.0')));
+  assert.ok(b.includes('.github/workflows/new.yml') && b.includes('git merge --no-ff v0.2.0'));
 });

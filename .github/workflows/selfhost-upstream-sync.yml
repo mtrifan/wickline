@@ -6,7 +6,8 @@
 #   publish  SYNC_TOKEN:      runs only trusted selfhost code from the production branch; pushes the
 #                             branch and opens/updates exactly one PR or issue. Never merges.
 #
-# SYNC_TOKEN: fine-grained PAT for this repository only, with Contents, Pull requests, Issues,
+# SYNC_TOKEN: environment secret (environment `upstream-sync`, deployment branch: selfhosted only),
+# a fine-grained PAT for this repository only, with Contents, Pull requests, Issues,
 # Workflows, Variables (read/write) and Administration (read). See UPSTREAM.md for renewal.
 name: selfhost-upstream-sync
 
@@ -76,6 +77,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # The verdict is taken from the runner's step outcomes, which upstream code cannot alter
+    # (it could rewrite any file it can reach, including a results file).
+    outputs:
+      npmci: ${{ steps.npmci.outcome }}
+      upstream: ${{ steps.upstream.outcome }}
+      selfhost: ${{ steps.selfhost.outcome }}
+      untouched: ${{ steps.untouched.outcome }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -85,41 +93,39 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: sync-out
-          path: sync-out
+          path: ${{ runner.temp }}/sync-out
       - name: Check out the merged tree
         env:
           BRANCH: ${{ needs.prepare.outputs.branch }}
+          BUNDLE: ${{ runner.temp }}/sync-out/merged.bundle
         run: |
-          git fetch --no-tags sync-out/merged.bundle "+refs/heads/$BRANCH:refs/heads/$BRANCH"
+          git fetch --no-tags "$BUNDLE" "+refs/heads/$BRANCH:refs/heads/$BRANCH"
           git checkout --quiet "$BRANCH"
           git fetch --no-tags "https://github.com/$UPSTREAM_REPO.git" '+refs/tags/v*:refs/tags/v*' '+refs/heads/main:refs/remotes/upstream/main'
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # Upstream code runs here, in a job without secrets. Each check is recorded, not fatal, so the
-      # publish job can report every failure in one issue.
-      - name: Validate
-        run: |
-          set +e
-          out=sync-out/validation.log; : > "$out"; ok=true
-          check() { name="$1"; shift; echo "::group::$name"; "$@" > /tmp/step.log 2>&1; rc=$?; cat /tmp/step.log; echo "::endgroup::"
-            if [ $rc -eq 0 ]; then echo "✔ $name" >> "$out"; else ok=false; echo "✖ $name (exit $rc)" >> "$out"; tail -n 25 /tmp/step.log | sed 's/^/    /' >> "$out"; fi; }
-          check "npm ci --ignore-scripts" npm ci --ignore-scripts --no-audit --no-fund
-          check "upstream tests" npm test
-          check "selfhost unit + contract tests" npm --prefix selfhost test
-          check "no upstream file modified" node selfhost/ci/check-upstream-untouched.mjs
-          node -e 'const fs=require("fs");const log=fs.readFileSync(process.argv[1],"utf8");fs.writeFileSync("sync-out/validation.json",JSON.stringify({ok:process.argv[2]==="true",summary:"```\n"+log.trim()+"\n```"}))' "$out" "$ok"
-          cat "$out"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: validation
-          path: sync-out/validation.json
-          retention-days: 7
+      # Upstream code runs from here on, in a job without secrets.
+      - id: npmci
+        continue-on-error: true
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - id: upstream
+        continue-on-error: true
+        run: npm test
+      - id: selfhost
+        continue-on-error: true
+        run: npm --prefix selfhost test
+      - id: untouched
+        continue-on-error: true
+        run: node selfhost/ci/check-upstream-untouched.mjs
 
   publish:
     needs: [prepare, validate]
     if: always() && needs.prepare.result == 'success'
     runs-on: ubuntu-latest
+    # SYNC_TOKEN is an environment secret; the environment only admits the production branch, so
+    # workflows running on integrate/* or PR branches can never read it.
+    environment: upstream-sync
     permissions:
       contents: read
     steps:
@@ -141,11 +147,6 @@ jobs:
         with:
           name: sync-out
           path: sync-out
-      - uses: actions/download-artifact@v4
-        if: needs.validate.result == 'success'
-        with:
-          name: validation
-          path: sync-out
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -153,4 +154,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
           DRY_RUN: ${{ inputs.dry_run }}
+          V_NPMCI: ${{ needs.validate.outputs.npmci }}
+          V_UPSTREAM: ${{ needs.validate.outputs.upstream }}
+          V_SELFHOST: ${{ needs.validate.outputs.selfhost }}
+          V_UNTOUCHED: ${{ needs.validate.outputs.untouched }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node selfhost/ci/upstream-sync.mjs publish --in sync-out $([ "$DRY_RUN" = "true" ] && echo --dry-run)

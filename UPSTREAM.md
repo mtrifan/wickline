@@ -30,7 +30,7 @@ The workflow has three jobs, so new upstream code never runs where a write token
    - Looks for an existing PR or issue for that release, using hidden markers `<!-- upstream-sync:<kind>:<version> -->`.
    - Merges the release into `integrate/upstream-<version>`.
    - Computes the touched integration points (`selfhost/INTEGRATION_POINTS.json`), any new upstream workflow files, the release notes, and the commits on upstream `main` that are not yet released.
-2. **validate** (no secrets) runs on the merged tree:
+2. **validate** (no secrets) runs on the merged tree. The pass/fail verdict comes from the runner's step outcomes, not from files that upstream code could rewrite:
    - upstream `npm test`;
    - selfhost unit and contract tests;
    - the upstream-untouched check.
@@ -39,6 +39,7 @@ The workflow has three jobs, so new upstream code never runs where a write token
    - Fast-forwards `main`.
    - Opens or updates exactly one of:
      - a **PR** (clean merge, validation green);
+     - an **issue** "workflow files changed", when the release modifies upstream `.github/workflows`. The bot never pushes upstream workflow changes, because that would run new upstream workflow code here. You integrate that release by hand;
      - an **issue** "merge conflicts", with the files, the affected integration points and the resolution commands;
      - an **issue** "validation failed", with log excerpts. The branch is pushed for debugging.
    - Keeps one rolling issue, *Upstream: unreleased changes*, up to date.
@@ -87,7 +88,9 @@ The untouched check accepts a file that is identical to upstream `main`. When th
 These live outside git, and the sync job verifies them on every run:
 - **Default branch:** `selfhosted`. Merge commits on; squash and rebase off; head branches deleted automatically on merge.
 - **Actions:** `release.yml`, `pages.yml` and `community.yml` disabled. All `selfhost-*` workflows enabled.
-- **Secret `SYNC_TOKEN`:** a fine-grained personal access token on the owner's account.
+- **Default workflow permissions:** read-only (Settings → Actions → General). Workflows request write scopes explicitly.
+- **Environment `upstream-sync`:** deployment branches limited to `selfhosted`. It holds the `SYNC_TOKEN` secret, so workflows running on `integrate/*` or PR branches can never read it.
+- **Secret `SYNC_TOKEN`** (in the `upstream-sync` environment, not a repository secret): a fine-grained personal access token on the owner's account.
   - **Repository access:** only this repository.
   - **Permissions:**
     - Contents: read/write
