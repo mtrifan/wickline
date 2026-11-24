@@ -1,0 +1,4 @@
+{
+  "$comment": "Deliberate modifications of upstream files, each with the reason it cannot live in selfhost/. Keep this empty whenever possible; every entry is a future merge conflict. Format: { \"file\": \"public/js/trading.js\", \"reason\": \"...\", \"upstreamPR\": \"https://github.com/keptaduona/wickline/pull/N\" }",
+  "patches": []
+}
