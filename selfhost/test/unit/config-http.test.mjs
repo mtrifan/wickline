@@ -64,8 +64,11 @@ test('same-origin check for state-changing requests', () => {
 });
 
 test('post-login redirects stay on this site', () => {
-  for (const bad of ['//evil.com', 'https://evil.com', '/\\evil.com', 'javascript:alert(1)', '/a\r\nSet-Cookie: x=1', '/selfhost/login?next=/']) assert.equal(safeNext(bad), '/', bad);
+  for (const bad of ['//evil.com', 'https://evil.com', '/\\evil.com', 'javascript:alert(1)', '/a\r\nSet-Cookie: x=1', '/selfhost/login?next=/',
+    '/\t/evil.com', '/\n/evil.com', '/ /evil.com', '/\x00/evil.com', '/a\\b', '/./selfhost/login']) assert.equal(safeNext(bad), '/', JSON.stringify(bad));
   assert.equal(safeNext('/?s=AAPL'), '/?s=AAPL');
+  assert.equal(safeNext('/a/../b?x=1'), '/b?x=1', 'normalised, still local');
+  assert.equal(safeNext('/%2F/evil.com/..'), '/%2F/', 'an encoded slash stays a path segment, never a host');
 });
 
 test('cookies parse and serialize with safe defaults', () => {

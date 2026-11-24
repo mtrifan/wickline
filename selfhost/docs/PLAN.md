@@ -201,6 +201,8 @@ UPSTREAM.md SELFHOSTED.md ARCHITECTURE.md CHANGELOG-SELFHOSTED.md UPGRADE.md
 
 ### 2.2 Request pipeline
 
+> **Phase 1 implementation note:** upstream's request handler is captured from `startServer()`, and upstream's own listener is **closed immediately**. No unauthenticated port stays open, not even on loopback. When the Phase 3 alert worker needs the Yahoo relay, it will be served the same captured handler on a private Unix socket (in a mode-0700 directory), not a TCP port.
+
 **Startup:**
 1. `selfhost/server.mjs` repeats upstream's script-mode proxy init (server.mjs:1083-1089).
 2. It calls upstream `startServer({port:0, host:'127.0.0.1'})`. This internal listener is used only by the alert worker's Yahoo adapter.

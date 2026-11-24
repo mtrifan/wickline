@@ -40,7 +40,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   // Outbound proxy for every fetch/WebSocket (same behaviour as `node server.mjs`).
   const proxyMod = await import(pathToFileURL(path.join(ROOT, 'lib/proxy.mjs')).href);
   const proxy = proxyMod.envProxy();
-  if (proxy.error) log.warn('ignoring invalid proxy setting', { proxy: proxy.text, error: proxy.error });
+  if (proxy.error) log.warn('ignoring invalid proxy setting', { proxy: String(proxy.text || '').replace(/\/\/[^@/]*@/, '//[credentials]@').replace(/^[^:/]*:[^@/]*@/, '[credentials]@'), error: proxy.error });
   if (proxy.url) { await proxyMod.setServerProxy(proxy.url); log.info('outbound traffic goes through a proxy', { proxy: proxy.url.replace(/\/\/[^@/]*@/, '//') }); }
 
   const { db, version: schema, migrated, backup } = openDatabase(cfg.dataDir, { log });
@@ -51,11 +51,12 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   const passwordHash = cfg.authMode === 'password' ? (cfg.passwordHash || hashPassword(cfg.password)) : null;
   const limiter = createLoginLimiter({ globalSpacingMs: cfg.exposure === 'public' ? 1000 : 0 });
 
-  // Upstream runs on an internal loopback listener (used by the background worker in Phase 3);
-  // its request handler is captured and called in-process for public requests.
+  // Upstream's request handler is captured from startServer() and called in-process; upstream's own
+  // listener is closed straight away, so no unauthenticated port stays open (not even on loopback).
   const up = upstream || await import(pathToFileURL(path.join(ROOT, 'server.mjs')).href);
   const internal = await up.startServer({ port: 0, host: '127.0.0.1' });
   const [upstreamHandler] = internal.server.listeners('request');
+  await new Promise((r) => internal.server.close(() => r()));
   if (typeof upstreamHandler !== 'function') throw new Error('Upstream server has no request handler (integration point server-start)');
 
   const cookieSecure = (info) => cfg.cookieSecure === 'true' || cfg.exposure === 'public' || (cfg.cookieSecure === 'auto' && info.proto === 'https');
@@ -79,9 +80,11 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
       if (authenticate(req, info)) return redirect(res, safeNext(url.searchParams.get('next')));
       return sendHtml(res, 200, loginPage({ next: safeNext(url.searchParams.get('next')), totp: !!cfg.totpSecret }));
     }
-    const wait = limiter.retryAfter(info.ip);
     const form = await readForm(req, 16 * 1024);
     const next = safeNext(form.next);
+    // Checked after the last await: from here to limiter.fail() everything is synchronous (scrypt
+    // included), so parallel attempts cannot all pass the check before a failure is recorded.
+    const wait = limiter.retryAfter(info.ip);
     const fail = (status, error, retryMs = 0) => sendHtml(res, status, loginPage({ next, totp: !!cfg.totpSecret, error, retryAfterSec: Math.ceil(retryMs / 1000) }),
       retryMs ? { 'Retry-After': String(Math.ceil(retryMs / 1000)) } : {});
     if (wait > 0) return fail(429, 'Too many attempts.', wait);
@@ -177,13 +180,10 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     if (closing) return closing;
     state.shuttingDown = true;
     closing = (async () => {
-      const done = Promise.all([
-        new Promise((r) => server.close(() => r())),
-        new Promise((r) => internal.server.close(() => r())),
-      ]);
+      const done = new Promise((r) => server.close(() => r()));
       // Long-lived streams (SSE) never end on their own.
-      server.closeIdleConnections(); internal.server.closeIdleConnections();
-      setTimeout(() => { server.closeAllConnections(); internal.server.closeAllConnections(); }, 1000).unref();
+      server.closeIdleConnections();
+      setTimeout(() => server.closeAllConnections(), 1000).unref();
       await done;
       clearInterval(purgeTimer);
       try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* best effort */ }

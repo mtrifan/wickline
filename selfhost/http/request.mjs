@@ -89,10 +89,18 @@ export function sameOrigin(req, info) {
   }
 }
 
-/** A post-login redirect target limited to this site (no open redirects). */
+/**
+ * A post-login redirect target limited to this site (no open redirects). Browsers drop tabs and
+ * newlines from URLs ("/\t/evil.com" becomes "//evil.com"), so control characters, whitespace and
+ * backslashes are refused outright, and the result must resolve to this origin.
+ */
 export function safeNext(next) {
-  const s = String(next || '/');
-  if (!s.startsWith('/') || s.startsWith('//') || s.startsWith('/\\') || /[\r\n]/.test(s)) return '/';
-  if (s.startsWith('/selfhost/login')) return '/';
-  return s.slice(0, 2000);
+  const s = String(next ?? '/');
+  if (!s.startsWith('/') || /[\x00-\x20\x7f\\]/.test(s) || s.startsWith('//')) return '/';
+  let u;
+  try { u = new URL(s, 'http://self.invalid'); } catch { return '/'; }
+  if (u.origin !== 'http://self.invalid') return '/';
+  const out = u.pathname + u.search;
+  if (out.startsWith('//') || out.startsWith('/selfhost/login')) return '/';
+  return out.slice(0, 2000);
 }
