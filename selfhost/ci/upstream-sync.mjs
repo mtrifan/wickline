@@ -96,10 +96,9 @@ export const hasMarker = (body, kind, version) =>
  * outputs), never from files upstream code could have written.
  */
 export const VALIDATION_CHECKS = [
-  ['npmci', 'npm ci --ignore-scripts'],
-  ['upstream', 'upstream tests (npm test)'],
+  ['untouched', 'no upstream file modified (trusted script, no upstream code executed)'],
   ['selfhost', 'selfhost unit + contract tests'],
-  ['untouched', 'no upstream file modified'],
+  ['upstream', 'upstream tests (npm test)'],
 ];
 export function validationFromOutcomes(outcomes, runUrl) {
   const rows = VALIDATION_CHECKS.map(([id, label]) => ({ id, label, outcome: outcomes[id] || 'not run' }));
@@ -322,6 +321,19 @@ function prepare() {
       report.conflicts = git('diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean);
       tryGit('merge', '--abort');
       report.status = 'conflict';
+    } else {
+      // Provenance: everything the merge brings in relative to the production branch is upstream's.
+      const brought = git('diff', '--name-only', baseRef, `refs/heads/${report.branch}`).split('\n').filter(Boolean);
+      report.workflows = upstreamWorkflowChanges(brought);
+      report.collisions = forkPathCollisions(brought);
+      report.points = touchedPoints(JSON.parse(readFileSync(path.join(ROOT, 'selfhost/INTEGRATION_POINTS.json'), 'utf8')).points, brought);
+    }
+    if (report.status === 'conflict') {
+      // reported below
+    } else if (!previous) {
+      // Cannot tell what upstream changed since the last integration: fail closed.
+      report.status = 'workflows-changed';
+      report.collisions = [...report.collisions, '(no previously integrated upstream release found: integrate by hand once)'];
     } else if (report.workflows.length || report.collisions.length) {
       // Upstream changed its workflow files. Pushing them would let new upstream workflow code run
       // in this repository, so this release is integrated by hand (see UPSTREAM.md).
@@ -366,9 +378,9 @@ function publish() {
   const dir = path.resolve(o.in || 'sync-out');
   const dry = o['dry-run'] === true || o['dry-run'] === 'true';
   const r = JSON.parse(readFileSync(path.join(dir, 'report.json'), 'utf8'));
-  // Outcomes come from the workflow (`needs.validate.outputs`), set by the runner itself.
+  // Job results come from the workflow (`needs.<job>.result`), set by the runner itself.
   const validation = validationFromOutcomes({
-    npmci: process.env.V_NPMCI, upstream: process.env.V_UPSTREAM, selfhost: process.env.V_SELFHOST, untouched: process.env.V_UNTOUCHED,
+    untouched: process.env.V_UNTOUCHED, selfhost: process.env.V_SELFHOST, upstream: process.env.V_UPSTREAM,
   }, process.env.RUN_URL);
   const repo = r.repo;
 

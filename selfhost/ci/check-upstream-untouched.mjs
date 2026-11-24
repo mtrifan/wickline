@@ -5,7 +5,7 @@
 //   - it is identical to upstream's main (an upstream fix cherry-picked ahead of a release), or
 //   - it is listed in selfhost/UPSTREAM_PATCHES.json with a reason (deliberate, documented patch).
 //
-// Usage: node selfhost/ci/check-upstream-untouched.mjs [--base <ref>] [--upstream-main <ref>]
+// Usage: node selfhost/ci/check-upstream-untouched.mjs [--root <checkout>] [--base <ref>] [--upstream-main <ref>]
 // Needs upstream tags and main fetched locally, e.g.
 //   git fetch --no-tags https://github.com/keptaduona/wickline.git '+refs/tags/v*:refs/tags/v*' '+refs/heads/main:refs/remotes/upstream/main'
 
@@ -14,11 +14,12 @@ import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : null; };
+
+// --root checks another checkout (CI runs this trusted copy against the merged upstream tree).
+const ROOT = path.resolve(arg('--root') || path.join(path.dirname(fileURLToPath(import.meta.url)), '../..'));
 const git = (...args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim();
 const tryGit = (...args) => { try { return git(...args); } catch { return null; } };
-
-const arg = (name) => { const i = process.argv.indexOf(name); return i > 0 ? process.argv[i + 1] : null; };
 
 export const ALLOWED = [
   /^selfhost\//,

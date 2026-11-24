@@ -88,7 +88,7 @@ test('markers only count at the very start of a body', () => {
 });
 
 test('validation passes only when every runner-reported step succeeded', () => {
-  const all = { npmci: 'success', upstream: 'success', selfhost: 'success', untouched: 'success' };
+  const all = { upstream: 'success', selfhost: 'success', untouched: 'success' };
   assert.equal(validationFromOutcomes(all).ok, true);
   assert.equal(validationFromOutcomes({ ...all, upstream: 'failure' }).ok, false);
   assert.equal(validationFromOutcomes({ ...all, untouched: undefined }).ok, false, 'a missing outcome is not a pass');

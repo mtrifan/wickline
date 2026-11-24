@@ -2,7 +2,7 @@
 #
 # Three jobs so that new upstream code never runs where a write token exists:
 #   prepare  read-only token: find the newest upstream release, merge it into integrate/upstream-<v>
-#   validate no secrets:      run upstream + selfhost tests on the merged tree
+#   validate no secrets:      three jobs (untouched check, selfhost tests, upstream tests)
 #   publish  SYNC_TOKEN:      runs only trusted selfhost code from the production branch; pushes the
 #                             branch and opens/updates exactly one PR or issue. Never merges.
 #
@@ -71,30 +71,34 @@ jobs:
           path: sync-out/
           retention-days: 7
 
-  validate:
+  # Validation is split by trust: the untouched check executes no upstream code at all (trusted
+  # script from the production branch, merged tree as data); selfhost tests and upstream tests each
+  # run in their own job, so one can never tamper with another's verdict. Publish reads each job's
+  # result from the runner, not from files.
+  validate-untouched:
     needs: prepare
     if: needs.prepare.outputs.status == 'merged'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # The verdict is taken from the runner's step outcomes, which upstream code cannot alter
-    # (it could rewrite any file it can reach, including a results file).
-    outputs:
-      npmci: ${{ steps.npmci.outcome }}
-      upstream: ${{ steps.upstream.outcome }}
-      selfhost: ${{ steps.selfhost.outcome }}
-      untouched: ${{ steps.untouched.outcome }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE_BRANCH }}
+          persist-credentials: false
+          path: trusted
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.BASE_BRANCH }}
           fetch-depth: 0
           persist-credentials: false
+          path: merged
       - uses: actions/download-artifact@v4
         with:
           name: sync-out
           path: ${{ runner.temp }}/sync-out
       - name: Check out the merged tree
+        working-directory: merged
         env:
           BRANCH: ${{ needs.prepare.outputs.branch }}
           BUNDLE: ${{ runner.temp }}/sync-out/merged.bundle
@@ -105,22 +109,74 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # Upstream code runs from here on, in a job without secrets.
-      - id: npmci
-        continue-on-error: true
-        run: npm ci --ignore-scripts --no-audit --no-fund
-      - id: upstream
-        continue-on-error: true
-        run: npm test
-      - id: selfhost
-        continue-on-error: true
-        run: npm --prefix selfhost test
-      - id: untouched
-        continue-on-error: true
-        run: node selfhost/ci/check-upstream-untouched.mjs
+      - run: node trusted/selfhost/ci/check-upstream-untouched.mjs --root merged
+
+  validate-selfhost:
+    needs: prepare
+    if: needs.prepare.outputs.status == 'merged'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE_BRANCH }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: merged
+      - uses: actions/download-artifact@v4
+        with:
+          name: sync-out
+          path: ${{ runner.temp }}/sync-out
+      - name: Check out the merged tree
+        working-directory: merged
+        env:
+          BRANCH: ${{ needs.prepare.outputs.branch }}
+          BUNDLE: ${{ runner.temp }}/sync-out/merged.bundle
+        run: |
+          git fetch --no-tags "$BUNDLE" "+refs/heads/$BRANCH:refs/heads/$BRANCH"
+          git checkout --quiet "$BRANCH"
+          git fetch --no-tags "https://github.com/$UPSTREAM_REPO.git" '+refs/tags/v*:refs/tags/v*' '+refs/heads/main:refs/remotes/upstream/main'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - working-directory: merged
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm --prefix selfhost test
+
+  validate-upstream:
+    needs: prepare
+    if: needs.prepare.outputs.status == 'merged'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BASE_BRANCH }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: merged
+      - uses: actions/download-artifact@v4
+        with:
+          name: sync-out
+          path: ${{ runner.temp }}/sync-out
+      - name: Check out the merged tree
+        working-directory: merged
+        env:
+          BRANCH: ${{ needs.prepare.outputs.branch }}
+          BUNDLE: ${{ runner.temp }}/sync-out/merged.bundle
+        run: |
+          git fetch --no-tags "$BUNDLE" "+refs/heads/$BRANCH:refs/heads/$BRANCH"
+          git checkout --quiet "$BRANCH"
+          git fetch --no-tags "https://github.com/$UPSTREAM_REPO.git" '+refs/tags/v*:refs/tags/v*' '+refs/heads/main:refs/remotes/upstream/main'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - working-directory: merged
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm test
 
   publish:
-    needs: [prepare, validate]
+    needs: [prepare, validate-untouched, validate-selfhost, validate-upstream]
     if: always() && needs.prepare.result == 'success'
     runs-on: ubuntu-latest
     # SYNC_TOKEN is an environment secret; the environment only admits the production branch, so
@@ -154,9 +210,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
           DRY_RUN: ${{ inputs.dry_run }}
-          V_NPMCI: ${{ needs.validate.outputs.npmci }}
-          V_UPSTREAM: ${{ needs.validate.outputs.upstream }}
-          V_SELFHOST: ${{ needs.validate.outputs.selfhost }}
-          V_UNTOUCHED: ${{ needs.validate.outputs.untouched }}
+          V_UNTOUCHED: ${{ needs.validate-untouched.result }}
+          V_SELFHOST: ${{ needs.validate-selfhost.result }}
+          V_UPSTREAM: ${{ needs.validate-upstream.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node selfhost/ci/upstream-sync.mjs publish --in sync-out $([ "$DRY_RUN" = "true" ] && echo --dry-run)
