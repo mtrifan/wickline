@@ -1,0 +1,16 @@
+{
+  "name": "wickline-selfhost",
+  "private": true,
+  "description": "Self-hosted (Docker) edition of Wickline. Lives beside the unmodified upstream app; see ../ARCHITECTURE.md.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "test": "node --test --test-reporter=spec \"test/unit/**/*.test.mjs\" \"test/contract/**/*.test.mjs\"",
+    "test:contract": "node --test --test-reporter=spec \"test/contract/**/*.test.mjs\"",
+    "test:unit": "node --test --test-reporter=spec \"test/unit/**/*.test.mjs\"",
+    "check:upstream-untouched": "node ci/check-upstream-untouched.mjs"
+  }
+}

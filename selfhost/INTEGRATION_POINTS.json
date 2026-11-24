@@ -1,0 +1,21 @@
+{
+  "$comment": "Upstream files and behaviours the self-hosted edition depends on. The upstream sync workflow lists every entry whose file an upstream release touches; the named contract test proves the behaviour still holds. Keep this in step with ARCHITECTURE.md §4.",
+  "points": [
+    { "id": "server-start", "file": "server.mjs", "contract": "startServer({port,host}) resolves {server, port}; the server has exactly one 'request' listener (captured and delegated to); importing has no listen side effect", "test": "test/contract/server.test.mjs" },
+    { "id": "server-methods", "file": "server.mjs", "contract": "non-GET requests get 405 before routing, so selfhost must route its own mutations", "test": "test/contract/server.test.mjs" },
+    { "id": "server-cors", "file": "server.mjs", "contract": "CORS `*` is set through res.writeHead(status, headers), never res.setHeader, so the selfhost strip wraps writeHead", "test": "test/contract/server.test.mjs" },
+    { "id": "server-health", "file": "server.mjs", "contract": "GET /api/health returns {app:'wickline', version}; the frontend uses it to detect server mode", "test": "test/contract/server.test.mjs" },
+    { "id": "yahoo-stream", "file": "server.mjs", "contract": "/api/yahoo/stream is SSE, takes at most 100 symbols, ticks carry the session flag m (0 pre, 1 regular, 2 post, 3 extended)", "test": "test/contract/server.test.mjs" },
+    { "id": "proxy-api", "file": "lib/proxy.mjs", "contract": "exports envProxy() and setServerProxy(url) used by the selfhost entrypoint", "test": "test/contract/server.test.mjs" },
+    { "id": "html-head", "file": "public/index.html", "contract": "one <head> tag (injection anchor); the inline head script reads wickline.theme and wickline.paint; the module entry is js/app.js", "test": "test/contract/frontend.test.mjs" },
+    { "id": "storage-prefix", "file": "public/js/util.js", "contract": "store.get/set use localStorage keys 'wickline.<key>' holding JSON", "test": "test/contract/frontend.test.mjs" },
+    { "id": "storage-direct", "file": "public/js/drawings.js, public/js/scripts.js, public/js/i18n.js", "contract": "direct localStorage use keeps the wickline. prefix (drawings.<symbol>, scripts, lang)", "test": "test/contract/frontend.test.mjs" },
+    { "id": "storage-listeners", "file": "public/js/alerts.js, public/js/trading.js, public/js/scripts.js, public/js/i18n.js", "contract": "'storage' event listeners keyed on wickline.alerts / wickline.paper / wickline.scripts / wickline.lang drive live remote apply", "test": "test/contract/frontend.test.mjs" },
+    { "id": "storage-keys", "file": "public/js/**", "contract": "every key upstream stores is classified in sync/key-classes.json", "test": "test/contract/storage-keys.test.mjs" },
+    { "id": "url-hash", "file": "public/js/app.js", "contract": "the URL hash is s=<symbol>&tf=<tf> and is applied over the stored active chart on load (boot.js strips it before a sync reload)", "test": "test/contract/frontend.test.mjs" },
+    { "id": "scripts-shape", "file": "public/js/scripts.js", "contract": "saved scripts are entries {id, name, code, created, updated}; the merge uses id + updated", "test": "test/contract/frontend.test.mjs" },
+    { "id": "alert-semantics", "file": "public/js/alerts.js", "contract": "alert JSON {id, symbol, condition, price, message, active, created, triggeredAt, triggerPrice}; crossing rule and first-tick-ignored, pinned by tick fixtures shared with the server evaluator", "test": "test/contract/alerts.test.mjs" },
+    { "id": "crypto-feeds", "file": "public/js/datafeed.js", "contract": "Binance @miniTicker combined streams and the Coinbase ws-feed ticker channel, mirrored by the server adapters", "test": "test/contract/frontend.test.mjs" },
+    { "id": "paper-engine", "file": "public/js/paper.js", "contract": "PaperAccount API (placeOrder, tick, bar, toJSON) for the optional server execution phase", "test": "test/contract/frontend.test.mjs" }
+  ]
+}
