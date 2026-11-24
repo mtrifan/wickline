@@ -115,3 +115,17 @@ test('UPSTREAM_PATCHES.json entries need a real reason and an upstream file', ()
     assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /patched upstream file \(documented\): a\.txt/);
   } finally { f.cleanup(); }
 });
+
+test('unusual file names are compared exactly, not as git-quoted strings', () => {
+  const f = fixture();
+  try {
+    writeFileSync(path.join(f.dir, 'évil name.txt'), 'upstream\n');
+    f.commit('upstream file with a non-ASCII name');
+    f.g('tag', '-f', 'v1.0.0');
+    writeFileSync(path.join(f.dir, 'évil name.txt'), 'modified\n');
+    f.commit('edit it');
+    const r = f.run();
+    assert.equal(r.status, 1);
+    assert.ok(r.stderr.includes('✖ évil name.txt'), r.stderr);
+  } finally { f.cleanup(); }
+});

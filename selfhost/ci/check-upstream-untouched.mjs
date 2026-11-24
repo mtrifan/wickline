@@ -55,7 +55,8 @@ export function checkUntouched({ base, upstreamMain } = {}) {
   if (!base) throw Object.assign(new Error('No upstream release tag reachable from HEAD. Fetch upstream tags first (see the header of this script).'), { code: 2 });
   if (upstreamMain === undefined) upstreamMain = tryGit('rev-parse', '--verify', '-q', 'upstream/main') ? 'upstream/main' : null;
   const patched = loadPatches(base);
-  const changed = git('diff', '--name-only', base, 'HEAD').split('\n').filter(Boolean);
+  // -z: exact, unquoted names (git quotes unusual paths otherwise, which would dodge the allow-list).
+  const changed = execFileSync('git', ['diff', '-z', '--name-only', base, 'HEAD'], { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 << 20 }).split('\0').filter(Boolean);
   const violations = [];
   const notes = [];
   for (const file of changed) {

@@ -258,6 +258,14 @@ const tryRun = (cmd, args, opts) => { try { return run(cmd, args, opts); } catch
 const git = (...a) => run('git', a);
 const tryGit = (...a) => tryRun('git', a);
 const gh = (...a) => run('gh', a);
+
+/**
+ * Exact file names from `git diff`: NUL-separated (-z), so git never quotes or escapes them. A
+ * quoted name ("\303\251vil.yml") would otherwise slip past path checks like ^\.github/.
+ */
+export const diffNames = (...a) =>
+  execFileSync('git', ['diff', '-z', '--name-only', ...a], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 })
+    .split('\0').filter(Boolean);
 const ghJson = (...a) => JSON.parse(gh(...a) || 'null');
 
 function args() {
@@ -311,7 +319,7 @@ function prepare() {
   // fork added, and of whether a previous release tag is reachable.
   const mergeBase = tryGit('merge-base', baseRef, `refs/tags/${version}`);
   const range = previous ? `${previous}..${version}` : version;
-  const changed = mergeBase ? git('diff', '--name-only', `${baseRef}...refs/tags/${version}`).split('\n').filter(Boolean) : [];
+  const changed = mergeBase ? diffNames(`${baseRef}...refs/tags/${version}`) : [];
   const commits = git('log', '--no-merges', '--format=%h %s', range).split('\n').filter(Boolean).slice(0, 200);
   const unreleased = git('log', '--no-merges', '--format=%h %s', `${version}..refs/remotes/upstream/main`).split('\n').filter(Boolean).slice(0, 200);
   const points = touchedPoints(JSON.parse(readFileSync(path.join(ROOT, 'selfhost/INTEGRATION_POINTS.json'), 'utf8')).points, changed);
@@ -330,7 +338,7 @@ function prepare() {
   // this fork's main would bring in.
   // Fails the job (fail closed) if this fork's main cannot be fetched.
   git('fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main');
-  report.mirrorWorkflows = upstreamWorkflowChanges(git('diff', '--name-only', 'refs/remotes/origin/main', 'refs/remotes/upstream/main').split('\n').filter(Boolean));
+  report.mirrorWorkflows = upstreamWorkflowChanges(diffNames('refs/remotes/origin/main', 'refs/remotes/upstream/main'));
 
   // Duplicate guard: an open PR for the branch, or an open issue carrying this version's marker.
   if (!integrated) {
@@ -358,7 +366,7 @@ function prepare() {
     const merged = alreadyMerged ? 'already' : tryRun('git', ['-c', 'user.name=selfhost-upstream-sync', '-c', 'user.email=selfhost-upstream-sync@users.noreply.github.com',
       'merge', '--no-ff', '--no-edit', '-m', `chore(upstream): integrate ${version}`, `refs/tags/${version}`]);
     if (merged === null) {
-      report.conflicts = git('diff', '--name-only', '--diff-filter=U').split('\n').filter(Boolean);
+      report.conflicts = diffNames('--diff-filter=U');
       tryGit('merge', '--abort');
       report.status = 'conflict';
     }
@@ -434,7 +442,7 @@ function publish() {
   if (!mirrorWorkflows.length && !dry) {
     git('fetch', '--no-tags', '--quiet', 'origin', '+refs/heads/main:refs/remotes/origin/main');
     git('fetch', '--no-tags', '--quiet', `https://github.com/${r.upstreamRepo}.git`, '+refs/heads/main:refs/remotes/upstream/main');
-    mirrorWorkflows = upstreamWorkflowChanges(git('diff', '--name-only', 'refs/remotes/origin/main', r.upstreamMain).split('\n').filter(Boolean));
+    mirrorWorkflows = upstreamWorkflowChanges(diffNames('refs/remotes/origin/main', r.upstreamMain));
   }
   let ff = 'skipped';
   if (mirrorWorkflows.length) {
