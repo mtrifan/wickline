@@ -3,7 +3,7 @@
 An unofficial, self-hosted edition of [Wickline](https://github.com/keptaduona/wickline) that runs 24/7 in Docker, for example on Unraid. It runs the unmodified upstream app and adds:
 
 - **single-user login**: password, optional two-factor (TOTP), sessions that survive restarts;
-- **sync across devices**: watchlists, layouts, drawings, custom indicators, alerts and preferences *(Phase 2)*;
+- **sync across devices**: watchlists, layouts, drawings, custom indicators, alerts and preferences, with daily backups;
 - **background price alerts** with Gotify push notifications, even with no browser open *(Phase 3)*.
 
 > **Status:** Phase 1 (container and authentication) is complete. Images are published as `ghcr.io/mtrifan/wickline:edge`; `:stable` arrives with the first tagged release (Phase 4). The roadmap is in [the plan](selfhost/docs/PLAN.md).
@@ -67,6 +67,8 @@ Everything is set through environment variables. Each secret also accepts `<NAME
 | `ALLOW_API_TOKENS` | `true` | Bearer tokens for scripts (`cli.mjs token create`). In public mode they are off unless `ALLOW_API_TOKENS_PUBLIC=true`. |
 | `AUTH_MODE` | `password` | `none` disables login entirely (needs `I_UNDERSTAND_NO_AUTH=true`; never allowed in public mode). |
 | `SYNC_WORKSPACE` | `true` | Sync the chart layout (`workspace`) between devices. `false` keeps a separate layout on each device; watchlists, drawings, scripts, alerts and settings still sync. |
+| `BACKUP_INTERVAL_HOURS` | `24` | Hours between automatic backups to `/data/backups/`. `0` turns them off. |
+| `BACKUP_KEEP` | `14` | How many automatic backups are kept. |
 | `WICKLINE_PROXY` | none | Outbound HTTP or SOCKS5 proxy for market data (also `HTTPS_PROXY`, `ALL_PROXY`). |
 | `PORT`, `HOST`, `DATA_DIR` | `5173`, `0.0.0.0`, `/data` | Listener and data location. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. Logs are JSON lines on stdout/stderr. |
@@ -124,7 +126,7 @@ Your watchlist, drawings, scripts, alerts, paper account, chart layout and displ
 
 - **Login covers everything** except `/api/health/ready`, the container healthcheck, which returns only `{"ok":true}`. That includes the app, its market-data API, and upstream's `/api/health`.
 - **Failed logins** get an increasing delay per client, never a lockout. In public mode a short global spacing is added.
-- **Cross-site requests:** every state-changing request must carry a same-origin `Origin` header, and session cookies are `HttpOnly; SameSite=Lax`. Changes through the self-hosting JSON API also need an `X-Wickline-Selfhost: 1` header.
+- **Cross-site requests:** every state-changing request from a browser must carry a same-origin `Origin` header, and session cookies are `HttpOnly; SameSite=Lax`. Changes through the self-hosting JSON API also need an `X-Wickline-Selfhost: 1` header. Requests with an API token (`Authorization: Bearer`) need no `Origin`: browsers never send these tokens on their own.
 - **Slow clients:** a request must arrive within 60 seconds. Long-lived streams are not affected.
 - **Upstream's `Access-Control-Allow-Origin: *`** is removed, so other sites cannot read the API.
 - **Stored secrets:** sessions and API tokens are kept as SHA-256 digests, the password as scrypt. TOTP codes cannot be reused.
@@ -147,13 +149,12 @@ Use API tokens as `Authorization: Bearer wl_…`.
 
 ## Backup, upgrade and restore
 
-See [UPGRADE.md](UPGRADE.md). In short: everything lives in the `/data` volume (`wickline.db`). Schema migrations write a backup to `/data/backups/` before they run.
+See [UPGRADE.md](UPGRADE.md). In short: everything lives in the `/data` volume (`wickline.db`). A backup is written to `/data/backups/` every day and before every schema migration. While signed in, `/api/selfhost/backup` downloads the database and `/api/selfhost/export` your synced data as JSON. `node selfhost/cli.mjs restore <file>` restores a backup with the container stopped.
 
 ## Known limitations
 
 - Single user.
 - Alerts are still checked only while Wickline is open in a browser tab. Server-side alerts and push notifications arrive in Phase 3.
-- Backups, export and import of synced data arrive with the next release (Phase 2c). Until then, back up the `/data` volume.
 - The content security policy is report-only, because upstream relies on an inline script and `unsafe-eval` in its script sandbox.
 
 ## Licence
