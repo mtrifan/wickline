@@ -66,8 +66,18 @@ test('three-way merge: concurrent edits use the newer `updated`, ties go to the 
   assert.deepEqual(mergeIdArrays(base, [s('a', { name: 'srv', updated: 5 })], [s('a', { name: 'cli', updated: 3 })]), [s('a', { name: 'srv', updated: 5 })]);
   assert.deepEqual(mergeIdArrays(base, [s('a', { name: 'srv', updated: 3 })], [s('a', { name: 'cli', updated: 5 })]), [s('a', { name: 'cli', updated: 5 })]);
   assert.deepEqual(mergeIdArrays(base, [s('a', { name: 'srv', updated: 3 })], [s('a', { name: 'cli', updated: 3 })]), [s('a', { name: 'cli', updated: 3 })]);
-  // alerts carry no `updated`: the client's edit wins
-  assert.deepEqual(mergeIdArrays([s('x')], [s('x', { active: false })], [s('x', { price: 2 })]), [s('x', { price: 2 })]);
+});
+
+test('three-way merge: entries without `updated` (alerts) merge field by field', () => {
+  // server fired the alert (active, triggeredAt); a stale browser edited the price
+  const base = [s('x', { price: 1, active: true, triggeredAt: null })];
+  const ours = [s('x', { price: 1, active: false, triggeredAt: 99 })];
+  const theirs = [s('x', { price: 2, active: true, triggeredAt: null })];
+  assert.deepEqual(mergeIdArrays(base, ours, theirs), [s('x', { price: 2, active: false, triggeredAt: 99 })]);
+  // a field changed on both sides takes the client's value; fields removed on one side go
+  assert.deepEqual(mergeIdArrays([s('y', { price: 1, note: 'n' })], [s('y', { price: 3, note: 'n' })], [s('y', { price: 4 })]), [s('y', { price: 4 })]);
+  // no base entry (added on both sides): the client's copy
+  assert.deepEqual(mergeIdArrays([], [s('z', { price: 1 })], [s('z', { price: 2 })]), [s('z', { price: 2 })]);
 });
 
 test('three-way merge: an edit beats a concurrent deletion', () => {
@@ -149,6 +159,39 @@ test('merge keys: a stale delete of an entry removes it; a whole-key delete need
   const r = st.write('alerts', { value: JSON.stringify([s('b')]), baseVersion: 1, epoch }); // deleted a, from version 1
   assert.deepEqual(JSON.parse(r.value).map((e) => e.id), ['b', 'c']);
   refused(() => st.write('alerts', { value: null, baseVersion: 1, epoch }), 409, 'conflict');
+}));
+
+test('merge keys: a stale value write cannot resurrect a key deleted after its base', () => withState({}, (st) => {
+  const epoch = st.epoch();
+  st.write('alerts', { value: JSON.stringify([s('a')]), baseVersion: 0, epoch });
+  st.write('alerts', { value: null, baseVersion: 1, epoch });
+  assert.throws(() => st.write('alerts', { value: JSON.stringify([s('b')]), baseVersion: 1, epoch }),
+    (e) => e instanceof SyncError && e.status === 409 && e.body.deleted === true && e.body.version === 2);
+  assert.equal(st.write('alerts', { value: JSON.stringify([s('b')]), baseVersion: 2, epoch }).version, 3, 'recreating from the tombstone works');
+}));
+
+test('the synced-state quota limits total characters and live keys', () => withState({ maxTotalChars: 100, maxKeys: 3 }, (st) => {
+  const epoch = st.epoch();
+  st.write('drawings.A', { value: 'x'.repeat(60), baseVersion: 0, epoch });
+  refused(() => st.write('drawings.B', { value: 'x'.repeat(41), baseVersion: 0, epoch }), 413, 'Synced state quota exceeded');
+  st.write('drawings.A', { value: 'x'.repeat(90), baseVersion: 1, epoch }); // replacing counts the difference only
+  st.write('drawings.A', { value: null, baseVersion: 2, epoch }); // tombstones free their space
+  for (const k of ['theme', 'lang', 'news']) st.write(k, { value: 'v', baseVersion: 0, epoch });
+  refused(() => st.write('heatmap', { value: 'v', baseVersion: 0, epoch }), 413, 'Synced state quota exceeded');
+  assert.equal(st.write('theme', { value: 'w', baseVersion: 1, epoch }).version, 2, 'existing keys can still change');
+}));
+
+test('a listener that throws does not fail a committed write', () => withState({}, (st) => {
+  st.onChange(() => { throw new Error('boom'); });
+  const r = st.write('theme', { value: 'a', baseVersion: 0, epoch: st.epoch() });
+  assert.equal(r.version, 1);
+  assert.equal(st.snapshot().keys.theme.v, 'a');
+}));
+
+test('a no-op on a key that never existed reports rev 0', () => withState({}, (st) => {
+  const epoch = st.epoch();
+  st.write('theme', { value: 'a', baseVersion: 0, epoch });
+  assert.equal(st.write('lang', { value: null, baseVersion: 0, epoch }).rev, 0);
 }));
 
 test('merge keys fall back to last write wins when a value is not an id-array', () => withState({}, (st) => {

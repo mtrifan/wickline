@@ -33,7 +33,7 @@ async function readJson(req) {
 function parseWrite(body, method) {
   const { value, baseVersion, epoch, clientId } = body;
   if (!Number.isSafeInteger(baseVersion) || baseVersion < 0) throw new HttpError(400, 'baseVersion must be a non-negative integer');
-  if (typeof epoch !== 'string' || !epoch) throw new HttpError(400, 'epoch is required');
+  if (typeof epoch !== 'string' || !/^[0-9a-f]{1,64}$/.test(epoch)) throw new HttpError(400, 'epoch is required');
   if (clientId !== undefined && (typeof clientId !== 'string' || !CLIENT_ID.test(clientId))) throw new HttpError(400, 'Invalid clientId');
   if (method === 'PUT') {
     if (typeof value !== 'string') throw new HttpError(400, 'value must be a string');

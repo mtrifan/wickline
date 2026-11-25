@@ -50,7 +50,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   const store = createAuthStore(db, { sessionDays: cfg.sessionDays });
   store.purgeExpired();
   const purgeTimer = setInterval(() => store.purgeExpired(), 3600_000).unref();
-  const sync = createSyncState(db, { syncWorkspace: cfg.syncWorkspace });
+  const sync = createSyncState(db, { syncWorkspace: cfg.syncWorkspace, log });
   const hub = createEventHub(sync);
   const handleSync = createSyncRoutes({
     state: sync,

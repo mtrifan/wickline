@@ -4,7 +4,11 @@
 // client's write (theirs), each entry is resolved on its own:
 //   - changed on one side only      → that side wins (an addition, an edit or a deletion)
 //   - changed identically           → either
-//   - edited on both sides          → the higher numeric `updated` wins; on a tie, the client's
+//   - edited on both sides          → the higher numeric `updated` wins (scripts). Entries without
+//                                     `updated` (alerts) merge field by field against the base:
+//                                     a field changed on one side only keeps that change, so
+//                                     fields the server writes survive a stale browser write;
+//                                     a field changed on both sides takes the client's value
 //   - edited on one, deleted on other → the edit wins: a merge never discards someone's work
 // Order follows the server's array, with entries new to the client appended in its order.
 //
@@ -28,9 +32,22 @@ export function parseIdArray(text) {
 const byId = (arr) => new Map(arr.map((e) => [e.id, JSON.stringify(e)]));
 const updatedOf = (json) => { const u = JSON.parse(json).updated; return typeof u === 'number' && Number.isFinite(u) ? u : null; };
 
-function resolveBoth(o, t) {
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+function mergeFields(b, o, t) {
+  const [bo, oo, to] = [JSON.parse(b), JSON.parse(o), JSON.parse(t)];
+  const out = {};
+  for (const k of new Set([...Object.keys(oo), ...Object.keys(to)])) {
+    const v = same(to[k], bo[k]) ? oo[k] : to[k]; // client left the field alone → server's
+    if (v !== undefined) out[k] = v;
+  }
+  return JSON.stringify(out);
+}
+
+function resolveBoth(o, t, b) {
   const uo = updatedOf(o); const ut = updatedOf(t);
-  return uo !== null && ut !== null && uo > ut ? o : t;
+  if (uo !== null && ut !== null) return uo > ut ? o : t;
+  return b !== undefined ? mergeFields(b, o, t) : t;
 }
 
 /**
@@ -53,7 +70,7 @@ export function mergeIdArrays(base, ours, theirs) {
       else if (os === bs) pick = ts; // server left it alone
       else if (os === undefined) pick = ts; // deleted here, edited there: keep the edit
       else if (ts === undefined) pick = os;
-      else pick = resolveBoth(os, ts);
+      else pick = resolveBoth(os, ts, bs);
     }
     if (pick !== undefined) out.push(JSON.parse(pick));
   }

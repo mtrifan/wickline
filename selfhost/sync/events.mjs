@@ -4,7 +4,10 @@
 //
 // Each change is an `event: change` whose `id` is its rev, so a reconnecting EventSource resumes
 // with Last-Event-ID (which takes precedence over `since`) and receives everything it missed,
-// deletions included. A stream from another epoch, or one claiming a rev this server has not
+// deletions included. Without either, the stream replays all current state.
+//
+// A client must close its EventSource on `reset`: EventSource reconnects to the same URL by
+// itself, which would only be reset again. A stream from another epoch, or one claiming a rev this server has not
 // reached (the database was restored), gets `event: reset` and is closed: the client must fetch a
 // fresh snapshot rather than resume. So does a backlog larger than the buffer cap: the snapshot
 // is a plain response, while a stream that cannot drain would be dropped and reconnect forever.
@@ -35,6 +38,8 @@ export function createEventHub(state, { maxClients = 32, heartbeatMs = HEARTBEAT
     const chunk = frame('change', c, c.rev);
     for (const res of [...clients.keys()]) send(res, chunk);
   });
+  // A new epoch (restore, import) invalidates every open stream.
+  const unsubscribeEpoch = state.onEpoch(() => resetAll());
 
   function revalidate() {
     for (const [res, c] of [...clients]) {
@@ -70,13 +75,19 @@ export function createEventHub(state, { maxClients = 32, heartbeatMs = HEARTBEAT
     const reset = () => { res.end(frame('reset', { epoch: state.epoch(), rev: state.rev() })); };
     const epoch = url.searchParams.get('epoch');
     if (epoch !== state.epoch()) return reset();
-    const raw = req.headers['last-event-id'] ?? url.searchParams.get('since') ?? '';
+    const raw = req.headers['last-event-id'] ?? url.searchParams.get('since') ?? '0';
     const since = /^\d{1,15}$/.test(String(raw)) ? Number(raw) : NaN;
     if (!Number.isSafeInteger(since) || since > state.rev()) return reset();
 
     // Replay and subscribe in the same tick: writes are synchronous, so none can fall in between.
-    const backlog = state.changesSince(since).map((c) => frame('change', c, c.rev));
-    if (backlog.reduce((n, f) => n + Buffer.byteLength(f), 0) > MAX_BUFFERED) return reset();
+    const backlog = [];
+    let bytes = 0;
+    for (const c of state.changesSince(since)) {
+      const f = frame('change', c, c.rev);
+      bytes += Buffer.byteLength(f);
+      if (bytes > MAX_BUFFERED) return reset();
+      backlog.push(f);
+    }
     for (const f of backlog) res.write(f);
     clients.set(res, { session, isValid });
     const gone = () => clients.delete(res);
@@ -98,6 +109,7 @@ export function createEventHub(state, { maxClients = 32, heartbeatMs = HEARTBEAT
   function close() {
     clearInterval(heartbeat);
     unsubscribe();
+    unsubscribeEpoch();
     for (const res of [...clients.keys()]) drop(res);
   }
 

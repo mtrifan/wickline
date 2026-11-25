@@ -102,7 +102,13 @@ test('sync routes need a login, the header on writes, JSON bodies and synced key
   assert.equal((await put(ctx, 'theme', { value: 'x', baseVersion: -1, epoch })).status, 400);
   assert.equal((await put(ctx, 'theme', { value: 'x', baseVersion: 0 })).status, 400);
   assert.equal((await put(ctx, 'theme', { value: 'x', baseVersion: 0, epoch, clientId: 'bad id!' })).status, 400);
-  assert.equal((await put(ctx, 'theme', { value: 'x', baseVersion: 0, epoch: 'stale' })).body.error, 'epoch');
+  assert.equal((await put(ctx, 'theme', { value: 'x', baseVersion: 0, epoch: 'deadbeefdeadbeef' })).body.error, 'epoch');
+  assert.equal((await put(ctx, 'theme', { value: 'x', baseVersion: 0, epoch: 'e'.repeat(65) })).status, 400);
+  assert.equal((await put(ctx, 'theme', { value: 'x'.repeat(5_000_001), baseVersion: 0, epoch })).status, 413);
+  const delNoHeader = await fetch(`${ctx.base}/api/selfhost/state/theme`, { method: 'DELETE', headers: { origin: ctx.base, cookie: ctx.cookie, 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(delNoHeader.status, 403);
+  const crossSite = await fetch(`${ctx.base}/api/selfhost/state/theme`, { method: 'PUT', headers: { ...mutating(ctx.base, ctx.cookie), origin: 'https://evil.example' }, body: JSON.stringify({ value: 'x', baseVersion: 0, epoch }) });
+  assert.equal(crossSite.status, 403);
   const bad = await fetch(`${ctx.base}/api/selfhost/state/theme`, { method: 'POST', headers: mutating(ctx.base, ctx.cookie), body: '{}' });
   assert.equal(bad.status, 405);
   assert.equal((await fetch(`${ctx.base}/api/selfhost/state/%E0%A4%A`, { method: 'PUT', headers: mutating(ctx.base, ctx.cookie), body: '{}' })).status, 400);
@@ -284,4 +290,72 @@ test('a backlog larger than the buffer cap is answered with reset, not replayed'
   await recent.until(() => recent.events.length === 1);
   assert.equal(recent.events[0].data.key, 'drawings.B', 'a small backlog still replays');
   recent.close();
+});
+
+test('a stream without since or Last-Event-ID replays all current state', async () => {
+  const ctx = await start();
+  const { epoch } = await snapshot(ctx);
+  await put(ctx, 'theme', { value: 'a', baseVersion: 0, epoch });
+  const s = stream(ctx, { epoch });
+  await s.until(() => s.events.length === 1);
+  assert.equal(s.ended, false);
+  assert.equal(s.events[0].data.key, 'theme');
+  s.close();
+});
+
+test('resetEpoch alone resets the open streams', async () => {
+  const ctx = await start();
+  const { epoch } = await snapshot(ctx);
+  const s = stream(ctx, { epoch, since: 0 });
+  await s.ready;
+  await new Promise((r) => setTimeout(r, 50));
+  const next = ctx.app.sync.resetEpoch();
+  await s.until(() => s.ended);
+  assert.deepEqual(s.events, [{ event: 'reset', data: { epoch: next, rev: 0 } }]);
+});
+
+test('concurrent merges keep every added entry and converge on every stream', async () => {
+  const ctx = await start();
+  const { epoch } = await snapshot(ctx);
+  await put(ctx, 'scripts', { value: '[]', baseVersion: 0, epoch });
+  const s = stream(ctx, { epoch, since: 1 });
+  await s.ready;
+  await new Promise((r) => setTimeout(r, 50));
+  const N = 10;
+  const rs = await Promise.all(Array.from({ length: N }, (_, i) => put(ctx, 'scripts', { value: JSON.stringify([{ id: `s${i}`, updated: i }]), baseVersion: 1, epoch })));
+  assert.ok(rs.every((r) => r.status === 200));
+  assert.deepEqual(rs.map((r) => r.body.version).sort((a, b) => a - b), Array.from({ length: N }, (_, i) => i + 2));
+  const final = JSON.parse((await snapshot(ctx)).keys.scripts.v).map((e) => e.id).sort();
+  assert.deepEqual(final, Array.from({ length: N }, (_, i) => `s${i}`).sort());
+  await s.until(() => s.events.length === N);
+  assert.equal(s.events.at(-1).data.v, (await snapshot(ctx)).keys.scripts.v);
+  s.close();
+});
+
+test('with SYNC_WORKSPACE=false a stored workspace never reaches the stream', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'wl-sync-api-'));
+  dirs.push(dir);
+  const on = await start({}, dir);
+  await put(on, 'workspace', { value: '{"w":1}', baseVersion: 0, epoch: (await snapshot(on)).epoch });
+  await on.app.close();
+  const off = await start({ SYNC_WORKSPACE: 'false' }, dir);
+  const { epoch } = await snapshot(off);
+  await put(off, 'theme', { value: 'a', baseVersion: 0, epoch });
+  const s = stream(off, { epoch, since: 0 });
+  await s.until(() => s.events.length === 1);
+  assert.deepEqual(s.events.map((e) => e.data.key), ['theme']);
+  s.close();
+});
+
+test('the event hub refuses streams beyond its limit', async () => {
+  const { createEventHub } = await import('../../sync/events.mjs');
+  const fakeState = { onChange: () => () => {}, onEpoch: () => () => {}, epoch: () => 'e', rev: () => 0, changesSince: () => [] };
+  const hub = createEventHub(fakeState, { maxClients: 1 });
+  const mkRes = () => { const r = { status: 0, writeHead(s) { r.status = s; }, write() {}, end() {}, on() {}, writableLength: 0 }; return r; };
+  const req = { headers: {}, on() {} };
+  const url = new URL('http://x/api/selfhost/events?epoch=e');
+  const a = mkRes(); hub.handle(req, a, url);
+  const b = mkRes(); hub.handle(req, b, url);
+  assert.deepEqual([a.status, b.status, hub.size], [200, 503, 1]);
+  hub.close();
 });

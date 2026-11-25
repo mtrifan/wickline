@@ -9,6 +9,12 @@ import { parseIdArray, mergeIdArrays } from './merge.mjs';
 
 /** localStorage holds about 5 million UTF-16 characters per origin; no single value can be larger. */
 export const MAX_VALUE_CHARS = 5_000_000;
+/**
+ * Totals across all synced keys. Every synced value also lives in a browser's localStorage, which
+ * holds about 5 million characters, so these limits only stop a runaway or hostile client.
+ */
+export const MAX_TOTAL_CHARS = 10_000_000;
+export const MAX_KEYS = 5_000;
 /** Versions of each merged key kept for three-way merges. */
 export const HISTORY_DEPTH = 20;
 
@@ -19,9 +25,10 @@ export class SyncError extends Error {
 
 const newEpoch = () => randomBytes(8).toString('hex');
 
-export function createSyncState(db, { syncWorkspace = true, now = Date.now } = {}) {
+export function createSyncState(db, { syncWorkspace = true, now = Date.now, log, maxTotalChars = MAX_TOTAL_CHARS, maxKeys = MAX_KEYS } = {}) {
   const opts = { syncWorkspace };
   const listeners = new Set();
+  const epochListeners = new Set();
 
   const q = {
     meta: db.prepare('SELECT value FROM meta WHERE key = ?'),
@@ -35,6 +42,7 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now } = {
     history: db.prepare('SELECT value FROM kv_history WHERE key = ? AND version = ?'),
     addHistory: db.prepare('INSERT OR REPLACE INTO kv_history (key, version, value, created_at) VALUES (?, ?, ?, ?)'),
     pruneHistory: db.prepare('DELETE FROM kv_history WHERE key = ? AND version <= ?'),
+    usage: db.prepare('SELECT COALESCE(SUM(length(value)), 0) AS chars, COUNT(*) FILTER (WHERE deleted = 0) AS keys FROM kv_state'),
   };
 
   const epoch = () => q.meta.get('epoch').value;
@@ -87,14 +95,23 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now } = {
       const cur = curDeleted ? null : row.value;
       const unchanged = (v) => (v === null ? curDeleted : !curDeleted && cur === v);
 
-      if (unchanged(value)) return { version: curVer, rev: row ? row.rev : rev(), deleted: curDeleted, changed: false };
+      if (unchanged(value)) return { version: curVer, rev: row ? row.rev : 0, deleted: curDeleted, changed: false };
 
       let stored = value;
       if (policy === 'cas' || (policy === 'merge' && del)) {
         if (baseVersion !== curVer) throw new SyncError(409, { error: 'conflict', version: curVer, value: cur, deleted: curDeleted });
       } else if (policy === 'merge' && baseVersion !== curVer) {
+        // The whole key was deleted after the client's base: recreating it must be deliberate.
+        if (curDeleted && row) throw new SyncError(409, { error: 'conflict', version: curVer, value: null, deleted: true });
         stored = mergedValue(key, cur, value, baseVersion);
         if (unchanged(stored)) return { version: curVer, rev: row.rev, deleted: false, changed: false, value: stored };
+      }
+
+      if (stored !== null) {
+        const use = q.usage.get();
+        const chars = Number(use.chars) - (cur ? cur.length : 0) + stored.length;
+        const keys = Number(use.keys) + (curDeleted ? 1 : 0);
+        if (chars > maxTotalChars || keys > maxKeys) throw new SyncError(413, { error: 'Synced state quota exceeded' });
       }
 
       const version = curVer + 1;
@@ -113,7 +130,10 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now } = {
     if (result.changed) {
       const { change } = result;
       delete result.change;
-      for (const fn of listeners) fn(change);
+      // Broadcast failures never change the result of a committed write.
+      for (const fn of listeners) {
+        try { fn(change); } catch (e) { log?.error('sync listener failed', { error: e }); }
+      }
     }
     return result;
   }
@@ -122,11 +142,17 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now } = {
   function resetEpoch() {
     const e = newEpoch();
     q.setMeta.run('epoch', e);
+    for (const fn of epochListeners) {
+      try { fn(e); } catch (err) { log?.error('epoch listener failed', { error: err }); }
+    }
     return e;
   }
+
+  /** Calls fn(epoch) after every resetEpoch(). Returns an unsubscribe function. */
+  function onEpoch(fn) { epochListeners.add(fn); return () => epochListeners.delete(fn); }
 
   /** Calls fn(change) after every committed change. Returns an unsubscribe function. */
   function onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
-  return { epoch, rev, snapshot, write, changesSince, resetEpoch, onChange, policyFor: (k) => policyFor(k, opts) };
+  return { epoch, rev, snapshot, write, changesSince, resetEpoch, onChange, onEpoch, policyFor: (k) => policyFor(k, opts) };
 }
