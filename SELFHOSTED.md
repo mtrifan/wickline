@@ -122,7 +122,7 @@ Your watchlist, drawings, scripts, alerts, paper account, chart layout and displ
 
 - **Live updates:** alerts, the paper account, scripts and the language change on other devices within a few seconds.
 - **Everything else** (watchlist, drawings, layout, theme) needs a reload to show. A banner says "Updated on another device" with a **Reload** button. A tab in the background reloads by itself when you return to it, never while hidden.
-- **Conflicts:** if two devices change the same watchlist, drawing, layout or paper account, the first change to reach the server wins, and the other device shows "Your change on this device was replaced by a newer one". Scripts and alerts are merged entry by entry, so additions from both devices are kept.
+- **Conflicts:** if two devices change the same watchlist, drawing, layout or paper account, the first change to reach the server wins, and the other device shows "Your change on this device was replaced by a newer one". Scripts and alerts are merged entry by entry, so additions from both devices are kept. A deleted alert stays deleted for 30 days, even if a device that was offline still has it. Whether an alert has fired is decided by the server: a device that did not see an alert fire cannot re-arm it, and a device offline long enough to miss 20 changes to your alerts reloads them from the server instead of merging: alert changes made on that device while it was offline are discarded, and it shows "Your change on this device was replaced by a newer one".
 - **Offline:** changes are kept in the browser and sent when the server is reachable again. The dot in the bottom-right corner shows the state: green means synced, amber means saving, red means offline.
 - **Existing browser data:** the first time a browser that already holds Wickline data connects, the server's data wins. A banner offers a download of the browser's previous data. Items the server does not have yet are uploaded.
 - **Limits:** synced data is capped at 10 million characters in total. A browser holds about half of that, so this cap only stops runaway clients.
@@ -139,7 +139,7 @@ Notifications are queued in the database and survive restarts. When Gotify is un
 
 Run only one container on a data folder: a second one refuses to start while the first is running. After an unclean stop (a crash, a power cut) a replacement container may be refused for up to 90 seconds; the same container restarting is never refused.
 
-Price alerts start sending notifications when server-side alerts arrive (Phase 3). For now you can set up and test the connection.
+When an alert fires in an open Wickline tab, the server sends one notification for it: a second device that saw the same crossing, or a retried request, does not send another. An alert that fired on a device while it was offline is pushed when the device reconnects, if that was within the last 15 minutes. The notification shows the alert ("BTCUSDT crossing up 100000") and the price at that moment, plus your note. Checking alerts with no browser open arrives later in Phase 3.
 
 ## Security model
 
@@ -177,7 +177,7 @@ See [UPGRADE.md](UPGRADE.md). In short: everything lives in the `/data` volume (
 ## Known limitations
 
 - Single user.
-- Alerts are still checked only while Wickline is open in a browser tab. Server-side alerts and push notifications arrive in Phase 3.
+- Alerts are still checked only while Wickline is open in a browser tab; a trigger found there is pushed through Gotify. Checking alerts on the server, with no browser open, arrives later in Phase 3.
 - The content security policy is report-only, because upstream relies on an inline script and `unsafe-eval` in its script sandbox.
 
 ## Licence

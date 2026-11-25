@@ -45,11 +45,19 @@ export function createOutbox(db, { providers = [], maxAttempts = 8, log, now = D
    * "alert:<id>:<triggeredAt>"); queueing the same key again is a no-op. Returns the number queued.
    */
   function enqueue(key, payload) {
-    const t = now();
     // All providers or none: a crash cannot deliver an event to only some of them.
-    const n = transaction(db, () => configured().reduce((sum, p) => sum + Number(q.insert.run(key, p.id, JSON.stringify(payload), t, t).changes), 0));
+    const n = transaction(db, () => insert(key, payload));
     if (n) kick();
     return n;
+  }
+
+  /**
+   * enqueue() for a caller already inside a transaction, so the event and its notification commit
+   * together. The caller calls kick() after the commit. Returns the number queued.
+   */
+  function insert(key, payload) {
+    const t = now();
+    return configured().reduce((sum, p) => sum + Number(q.insert.run(key, p.id, JSON.stringify(payload), t, t).changes), 0);
   }
 
   let current = null; // the processDue() run in progress, for stop() to wait on
@@ -144,5 +152,5 @@ export function createOutbox(db, { providers = [], maxAttempts = 8, log, now = D
     return results;
   }
 
-  return { enqueue, start, stop, status, sendNow, processDue, get lastResult() { return lastResult; } };
+  return { enqueue, insert, kick, start, stop, status, sendNow, processDue, get lastResult() { return lastResult; } };
 }

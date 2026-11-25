@@ -5,7 +5,8 @@
 //   - changed on one side only      → that side wins (an addition, an edit or a deletion)
 //   - changed identically           → either
 //   - edited on both sides          → the higher numeric `updated` wins (scripts). Entries without
-//                                     `updated` (alerts) merge field by field against the base:
+//                                     `updated` merge field by field against the base (alerts use
+//                                     their own rules, alerts/merge.mjs, through a sync hook):
 //                                     a field changed on one side only keeps that change, so
 //                                     fields the server writes survive a stale browser write;
 //                                     a field changed on both sides takes the client's value.

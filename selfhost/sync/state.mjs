@@ -32,6 +32,8 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
   const opts = { syncWorkspace };
   const listeners = new Set();
   const epochListeners = new Set();
+  /** Per-key hooks run inside the write's transaction (the alerts merge, see alerts/ledger.mjs). */
+  const hooks = new Map();
 
   const q = {
     meta: db.prepare('SELECT value FROM meta WHERE key = ?'),
@@ -104,6 +106,44 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
     return JSON.stringify(mergeIdArrays(base, ours, theirs));
   }
 
+  /** Stores a new version of a key inside the caller's transaction and returns the change. */
+  function commit(key, policy, row, stored, clientId) {
+    const del = stored === null;
+    const version = (row ? row.version : 0) + 1;
+    const { rev: next } = q.nextRev.get();
+    const at = now();
+    q.upsert.run(key, stored, del ? 0 : stored.length, del ? 1 : 0, version, next, at, clientId);
+    if (policy === 'merge') {
+      q.addHistory.run(key, version, stored, del ? 0 : stored.length, at);
+      pruneHistory(key, version);
+    }
+    return { key, v: stored, ver: version, deleted: del, rev: next, by: clientId };
+  }
+
+  /** Runs fn in a transaction, telling the key's hook whether it committed. */
+  function hooked(hook, fn) {
+    let r;
+    try { r = transaction(db, fn); } catch (e) { hook?.rollback?.(); throw e; }
+    // Committed: whatever happens after this never turns the write into a failure.
+    try { hook?.afterCommit?.(); } catch (e) { log?.error('sync hook failed after commit', { error: e }); }
+    return r;
+  }
+
+  function broadcast(change) {
+    // Broadcast failures never change the result of a committed write.
+    for (const fn of listeners) {
+      try { fn(change); } catch (e) { log?.error('sync listener failed', { error: e }); }
+    }
+  }
+
+  /** The client's base value for a merge, or undefined when that version is no longer in history. */
+  function baseValue(key, baseVersion, curVer, cur) {
+    if (baseVersion === curVer) return cur;
+    if (baseVersion <= 0) return null;
+    const h = q.history.get(key, baseVersion);
+    return h ? h.value : undefined;
+  }
+
   /**
    * Applies a write (`value: null` deletes). Returns { version, rev, deleted, changed, value? }, where
    * `value` is present only when the stored value differs from the one sent (a merge), so the client
@@ -114,25 +154,35 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
     const policy = policyFor(key, opts);
     if (policy === null || policy === 'local') throw new SyncError(422, { error: 'This key is not synced' });
     const del = value === null;
+    const hook = policy === 'merge' ? hooks.get(key) : undefined;
 
-    const result = transaction(db, () => {
+    const result = hooked(hook, () => {
       if (clientEpoch !== epoch()) throw new SyncError(409, { error: 'epoch', epoch: epoch() });
       const row = q.row.get(key);
       const curVer = row ? row.version : 0;
       const curDeleted = !row || row.deleted === 1;
       const cur = curDeleted ? null : row.value;
       const unchanged = (v) => (v === null ? curDeleted : !curDeleted && cur === v);
+      const conflict = () => new SyncError(409, { error: 'conflict', version: curVer, value: cur, deleted: curDeleted });
 
       if (unchanged(value)) return { version: curVer, rev: row ? row.rev : 0, deleted: curDeleted, changed: false };
 
       let stored = value;
       if (policy === 'cas' || (policy === 'merge' && del)) {
-        if (baseVersion !== curVer) throw new SyncError(409, { error: 'conflict', version: curVer, value: cur, deleted: curDeleted });
-      } else if (policy === 'merge' && baseVersion !== curVer) {
+        if (baseVersion !== curVer) throw conflict();
+        if (del) hook?.onDelete?.(cur);
+      } else if (policy === 'merge' && (hook || baseVersion !== curVer)) {
         // The whole key was deleted after the client's base: recreating it must be deliberate.
-        if (curDeleted && row) throw new SyncError(409, { error: 'conflict', version: curVer, value: null, deleted: true });
-        stored = mergedValue(key, cur, value, baseVersion);
-        if (unchanged(stored)) return { version: curVer, rev: row.rev, deleted: false, changed: false, value: stored };
+        if (curDeleted && row && baseVersion !== curVer) throw new SyncError(409, { error: 'conflict', version: curVer, value: null, deleted: true });
+        if (hook) {
+          // The hook's rules depend on knowing the client's base: without it, re-hydrate instead.
+          const base = baseValue(key, baseVersion, curVer, cur);
+          if (base === undefined) throw conflict();
+          const m = hook.merge({ cur, value, base, baseVersion, nextVersion: curVer + 1 });
+          if (m !== null) stored = m;
+          else if (baseVersion !== curVer) stored = mergedValue(key, cur, value, baseVersion);
+        } else stored = mergedValue(key, cur, value, baseVersion);
+        if (unchanged(stored)) return { version: curVer, rev: row ? row.rev : 0, deleted: curDeleted, changed: false, value: stored };
       }
 
       const use = q.usage.get(excluded);
@@ -143,15 +193,8 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
       }
       if (!row) pruneTombstones(Number(use.rows), 1);
 
-      const version = curVer + 1;
-      const { rev: next } = q.nextRev.get();
-      const at = now();
-      q.upsert.run(key, stored, stored === null ? 0 : stored.length, del ? 1 : 0, version, next, at, clientId);
-      if (policy === 'merge') {
-        q.addHistory.run(key, version, stored, stored === null ? 0 : stored.length, at);
-        pruneHistory(key, version);
-      }
-      const out = { version, rev: next, deleted: del, changed: true, change: { key, v: stored, ver: version, deleted: del, rev: next, by: clientId } };
+      const change = commit(key, policy, row, stored, clientId);
+      const out = { version: change.ver, rev: change.rev, deleted: del, changed: true, change };
       if (stored !== value) out.value = stored;
       return out;
     });
@@ -159,12 +202,38 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
     if (result.changed) {
       const { change } = result;
       delete result.change;
-      // Broadcast failures never change the result of a committed write.
-      for (const fn of listeners) {
-        try { fn(change); } catch (e) { log?.error('sync listener failed', { error: e }); }
-      }
+      broadcast(change);
     }
     return result;
+  }
+
+  /**
+   * A server-side change to a synced key (a trigger the server detected). `fn(current, { version })`
+   * runs inside the transaction (`version` is the one a change would get) and returns the new value,
+   * or undefined to leave the key alone. Not subject to
+   * the client quota. Returns { changed, version?, rev? }.
+   */
+  function mutate(key, fn, { by = 'server', hook } = {}) {
+    const policy = policyFor(key, opts);
+    if (policy === null || policy === 'local') throw new Error(`mutate: ${key} is not synced`);
+    const result = hooked(hook, () => {
+      const row = q.row.get(key);
+      const cur = !row || row.deleted === 1 ? null : row.value;
+      const next = fn(cur, { version: (row ? row.version : 0) + 1 });
+      if (next === undefined || next === cur) return { changed: false };
+      if (typeof next !== 'string' && next !== null) throw new TypeError('mutate: the new value must be a string or null');
+      if (!row) pruneTombstones(Number(q.usage.get(excluded).rows), 1);
+      return { changed: true, change: commit(key, policy, row, next, by) };
+    });
+    if (!result.changed) return { changed: false };
+    broadcast(result.change);
+    return { changed: true, version: result.change.ver, rev: result.change.rev };
+  }
+
+  /** Registers the hook for a merged key. */
+  function useHook(key, hook) {
+    if (policyFor(key, opts) !== 'merge') throw new Error(`useHook: ${key} is not a merged key`);
+    hooks.set(key, hook);
   }
 
   /** Every live synced value: { key: value } (the portable export; deletions are not exported). */
@@ -198,9 +267,14 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
     transaction(db, () => {
       for (const r of q.all.all(0)) if (synced(r.key)) q.deleteRow.run(r.key);
       db.exec('DELETE FROM kv_history');
+      for (const h of hooks.values()) h.onReplace?.();
       q.setMeta.run('pruned_rev', String(rev()));
       const at = now();
-      for (const [k, v] of accepted) q.upsert.run(k, v, v.length, 0, 1, q.nextRev.get().rev, at, 'import');
+      for (const [k, v] of accepted) {
+        q.upsert.run(k, v, v.length, 0, 1, q.nextRev.get().rev, at, 'import');
+        // A device that adopts the import writes on top of version 1: keep it as a merge base.
+        if (policyFor(k, opts) === 'merge') q.addHistory.run(k, 1, v, v.length, at);
+      }
       q.setMeta.run('epoch', e); // with the data: never imported data under the old epoch
     });
     notifyEpoch(e);
@@ -227,5 +301,5 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
   /** Calls fn(change) after every committed change. Returns an unsubscribe function. */
   function onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
-  return { epoch, rev, prunedRev, snapshot, write, changesSince, exportKeys, replaceAll, resetEpoch, onChange, onEpoch, policyFor: (k) => policyFor(k, opts) };
+  return { epoch, rev, prunedRev, snapshot, write, mutate, useHook, changesSince, exportKeys, replaceAll, resetEpoch, onChange, onEpoch, policyFor: (k) => policyFor(k, opts) };
 }

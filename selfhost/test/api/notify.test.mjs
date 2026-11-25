@@ -91,3 +91,28 @@ test('notification settings are validated, the token can come from a file, and i
   assert.deepEqual([cfg.gotifyUrl, cfg.gotifyToken, cfg.publicUrl, cfg.gotifyPriority, cfg.notifyMaxAttempts], ['https://gotify.lan/sub', 'from-file', 'https://wl.example', 8, 8]);
   assert.equal(redacted(cfg).gotifyToken, '[set]');
 });
+
+test('a browser-detected alert trigger is pushed once, however many browsers report it', async () => {
+  const g = await fakeGotify(200);
+  const ctx = await start({ GOTIFY_URL: g.url, GOTIFY_TOKEN: 'tok', PUBLIC_URL: 'https://wl.example' });
+  const { epoch } = await (await fetch(`${ctx.base}/api/selfhost/state`, { headers: { cookie: ctx.cookie } })).json();
+  const put = (alerts, baseVersion) => fetch(`${ctx.base}/api/selfhost/state/alerts`, {
+    method: 'PUT',
+    headers: { origin: ctx.base, cookie: ctx.cookie, 'x-wickline-selfhost': '1', 'content-type': 'application/json' },
+    body: JSON.stringify({ value: JSON.stringify(alerts), baseVersion, epoch }),
+  });
+  const alert = { id: 'k1', symbol: 'BINANCE:BTCUSDT', condition: 'up', price: 100000, message: 'moon', active: true, created: 1 };
+  assert.equal((await put([alert], 0)).status, 200);
+  const fired = (at, p) => ({ ...alert, active: false, triggeredAt: at, triggerPrice: p });
+  const t0 = Date.now();
+  assert.equal((await put([fired(t0, 100010)], 1)).status, 200);
+  // A second device detected the same crossing from the same base.
+  const second = await (await put([fired(t0 + 40, 100020)], 1)).json();
+  assert.deepEqual(JSON.parse(second.value), [fired(t0, 100010)], 'the second device adopts the recorded trigger');
+  for (let i = 0; i < 50 && g.requests.length < 1; i++) await new Promise((r) => setTimeout(r, 20));
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(g.requests.length, 1);
+  assert.equal(g.requests[0].body.title, 'BTCUSDT crossing up 100000');
+  assert.equal(g.requests[0].body.message, 'Now 100010 · moon');
+  assert.equal(g.requests[0].body.extras['client::notification'].click.url, 'https://wl.example/#s=BINANCE%3ABTCUSDT');
+});
