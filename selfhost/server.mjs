@@ -24,7 +24,10 @@ import { createSyncState } from './sync/state.mjs';
 import { createEventHub } from './sync/events.mjs';
 import { createSyncRoutes } from './sync/routes.mjs';
 import { createAdminRoutes } from './http/admin.mjs';
-import { holdServerLock, startBackupScheduler, sweepTemporaryFiles } from './storage/backup.mjs';
+import { createNotifyRoutes } from './http/notify.mjs';
+import { createGotify } from './notify/gotify.mjs';
+import { createOutbox } from './notify/outbox.mjs';
+import { holdServerLock, startBackupScheduler, sweepTemporaryFiles, DataDirInUseError } from './storage/backup.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const COOKIE = 'wl_session';
@@ -50,8 +53,9 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   if (proxy.error) log.warn('ignoring invalid proxy setting (value not logged: it may contain credentials)', { error: proxy.error });
   if (proxy.url) { await proxyMod.setServerProxy(proxy.url); log.info('outbound traffic goes through a proxy', { proxy: proxy.url.replace(/\/\/[^@/]*@/, '//') }); }
 
+  const lock = holdServerLock(cfg.dataDir); // before opening the database; `cli.mjs restore` refuses while it is fresh
+  try { // a failed start releases the lock, so the next attempt is not refused
   const { db, version: schema, migrated, backup } = openDatabase(cfg.dataDir, { log });
-  const lock = holdServerLock(cfg.dataDir); // `cli.mjs restore` refuses while this is fresh
   const swept = sweepTemporaryFiles(cfg.dataDir);
   if (swept.length) log.info('removed temporary files left by an interrupted download or restore', { files: swept });
   const backups = startBackupScheduler({ db, dataDir: cfg.dataDir, intervalHours: cfg.backupIntervalHours, keep: cfg.backupKeep, log });
@@ -64,6 +68,10 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   const bootJs = readFileSync(path.join(ROOT, 'selfhost/public/boot.js'));
   const keyConfig = clientKeyConfig({ syncWorkspace: cfg.syncWorkspace });
   const handleAdmin = createAdminRoutes({ state: sync, db, dataDir: cfg.dataDir, version: VERSION, log });
+  const providers = [createGotify({ url: cfg.gotifyUrl, token: cfg.gotifyToken, priority: cfg.gotifyPriority })];
+  const outbox = createOutbox(db, { providers, maxAttempts: cfg.notifyMaxAttempts, log });
+  outbox.start(); // delivers anything queued before a restart
+  const handleNotify = createNotifyRoutes({ outbox, publicUrl: cfg.publicUrl });
   const hub = createEventHub(sync);
   const handleSync = createSyncRoutes({
     state: sync,
@@ -196,6 +204,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     }
     if (url.pathname.startsWith('/api/selfhost/') && (await handleSync(req, res, url, auth)) !== false) return undefined;
     if (url.pathname.startsWith('/api/selfhost/') && (await handleAdmin(req, res, url)) !== false) return undefined;
+    if (url.pathname.startsWith('/api/selfhost/notify/') && (await handleNotify(req, res, url)) !== false) return undefined;
     if (url.pathname.startsWith('/api/selfhost/') || url.pathname.startsWith('/selfhost/')) return sendJson(res, 404, { error: 'Not found' });
 
     // Upstream's app and API (GET only upstream; it answers 405 to anything else).
@@ -229,10 +238,11 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
       const done = new Promise((r) => server.close(() => r()));
       hub.close();
       backups.stop();
+      const drained = outbox.stop(); // a send in flight gets up to 5 s
       // Long-lived streams (SSE) never end on their own.
       server.closeIdleConnections();
       setTimeout(() => server.closeAllConnections(), 1000).unref();
-      await done;
+      await Promise.all([done, drained]);
       clearInterval(purgeTimer);
       try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* best effort */ }
       db.close();
@@ -242,7 +252,11 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     return closing;
   }
 
-  return { server, port, close, state, db, store, sync, hub };
+  return { server, port, close, state, db, store, sync, hub, outbox };
+  } catch (e) {
+    lock.release();
+    throw e;
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -258,8 +272,9 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
   const log = createLogger({ level: cfg.logLevel });
   let app;
   try { app = await startSelfhost(cfg, { log }); } catch (e) {
-    log.error(e instanceof DowngradeError ? e.message : 'startup failed', { error: e });
-    process.exit(e instanceof DowngradeError ? 78 : 1);
+    const known = e instanceof DowngradeError || e instanceof DataDirInUseError;
+    log.error(known ? e.message : 'startup failed', { error: e });
+    process.exit(known ? 78 : 1); // EX_CONFIG: needs the operator, not a restart loop
   }
   const stop = (signal) => {
     log.info('shutting down', { signal });

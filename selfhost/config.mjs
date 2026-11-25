@@ -13,7 +13,7 @@ export class ConfigError extends Error {
   }
 }
 
-const SECRET_KEYS = ['WICKLINE_PASSWORD', 'WICKLINE_PASSWORD_HASH', 'WICKLINE_TOTP_SECRET'];
+const SECRET_KEYS = ['WICKLINE_PASSWORD', 'WICKLINE_PASSWORD_HASH', 'WICKLINE_TOTP_SECRET', 'GOTIFY_TOKEN'];
 
 /** Reads NAME, or the file named by NAME_FILE (trailing newline trimmed). */
 function secret(env, name, readFile, problems) {
@@ -25,6 +25,19 @@ function secret(env, name, readFile, problems) {
 }
 
 const bool = (v, def = false) => (v == null || v === '' ? def : /^(1|true|yes|on)$/i.test(String(v)));
+
+/** An absolute http(s) URL without a trailing slash, or '' when unset. */
+function httpUrl(env, name, problems) {
+  const raw = (env[name] || '').trim();
+  if (!raw) return '';
+  let u;
+  // Values are never echoed in errors: a URL can carry credentials.
+  try { u = new URL(raw); } catch { problems.push(`${name} must be an absolute URL such as https://host`); return ''; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') { problems.push(`${name} must start with http:// or https://`); return ''; }
+  if (u.username || u.password) { problems.push(`${name} must not contain a user name or password (the URL is logged at startup; Gotify uses GOTIFY_TOKEN)`); return ''; }
+  if (u.search || u.hash) { problems.push(`${name} must not have a query or fragment`); return ''; }
+  return u.href.replace(/\/+$/, '');
+}
 
 function int(env, name, def, { min, max }, problems) {
   const raw = env[name];
@@ -77,6 +90,11 @@ export function loadConfig(env = process.env, { readFile = readFileSync } = {}) 
     syncWorkspace: bool(env.SYNC_WORKSPACE, true),
     backupIntervalHours: int(env, 'BACKUP_INTERVAL_HOURS', 24, { min: 0, max: 24 * 30 }, problems),
     backupKeep: int(env, 'BACKUP_KEEP', 14, { min: 1, max: 1000 }, problems),
+    publicUrl: httpUrl(env, 'PUBLIC_URL', problems),
+    gotifyUrl: httpUrl(env, 'GOTIFY_URL', problems),
+    gotifyToken: secret(env, 'GOTIFY_TOKEN', readFile, problems).trim(),
+    gotifyPriority: int(env, 'GOTIFY_PRIORITY', 8, { min: 0, max: 10 }, problems),
+    notifyMaxAttempts: int(env, 'NOTIFY_MAX_ATTEMPTS', 8, { min: 1, max: 50 }, problems),
   };
 
   if (!['debug', 'info', 'warn', 'error'].includes(cfg.logLevel)) problems.push('LOG_LEVEL must be debug, info, warn or error');
@@ -113,6 +131,10 @@ export function loadConfig(env = process.env, { readFile = readFileSync } = {}) 
     problems.push('SELFHOST_TEST_MODE is not allowed when NODE_ENV=production');
   }
 
+  if (cfg.gotifyUrl && !cfg.gotifyToken) problems.push('GOTIFY_URL is set but GOTIFY_TOKEN (or GOTIFY_TOKEN_FILE) is not: create an application in Gotify and use its token');
+  if (cfg.gotifyToken && !cfg.gotifyUrl) problems.push('GOTIFY_TOKEN is set but GOTIFY_URL is not');
+  if (cfg.gotifyToken && !/^[\x21-\x7e]{1,200}$/.test(cfg.gotifyToken)) problems.push('GOTIFY_TOKEN contains unexpected characters');
+
   if (problems.length) throw new ConfigError(problems);
   return cfg;
 }
@@ -120,7 +142,7 @@ export function loadConfig(env = process.env, { readFile = readFileSync } = {}) 
 /** The configuration with secrets replaced, for logs and diagnostics. */
 export function redacted(cfg) {
   const out = { ...cfg };
-  for (const k of ['password', 'passwordHash', 'totpSecret']) out[k] = cfg[k] ? '[set]' : '';
+  for (const k of ['password', 'passwordHash', 'totpSecret', 'gotifyToken']) out[k] = cfg[k] ? '[set]' : '';
   return out;
 }
 

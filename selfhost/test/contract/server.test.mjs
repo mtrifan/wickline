@@ -86,3 +86,8 @@ test('lib/proxy.mjs exports envProxy and setServerProxy', async () => {
   assert.equal(typeof proxy.envProxy, 'function', point('proxy-api'));
   assert.equal(typeof proxy.setServerProxy, 'function', point('proxy-api'));
 });
+
+test('upstream depends on undici, which the proxy and the Gotify provider use', () => {
+  const pkg = JSON.parse(readUpstream('package.json'));
+  assert.ok(pkg.dependencies?.undici, `${point('proxy-api')} selfhost/notify/gotify.mjs imports undici from upstream's dependencies`);
+});

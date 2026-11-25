@@ -8,6 +8,7 @@
 //   node selfhost/cli.mjs sessions revoke-all      signs out every browser            [needs DATA_DIR]
 //   node selfhost/cli.mjs backup                   writes a backup to DATA_DIR/backups now
 //   node selfhost/cli.mjs restore <file> [--force] replaces the database with a backup  [server stopped]
+//   node selfhost/cli.mjs notify-test              sends a test notification with the configured provider
 //
 // In Docker: docker exec -it wickline node selfhost/cli.mjs <command>
 
@@ -80,10 +81,21 @@ try {
     else process.stdout.write(`${r.tokens} API token(s) ${r.tokensFromLive ? 'carried over from the database being replaced' : 'restored from the backup'}\n`);
     process.stdout.write('every browser must sign in again; with two-factor login, use the next code\n');
     process.stdout.write('Start the container. Open browsers reload into the restored data.\n');
+  } else if (cmd === 'notify-test') {
+    const { loadConfig, ConfigError } = await import('./config.mjs');
+    const { createGotify } = await import('./notify/gotify.mjs');
+    const { testPayload } = await import('./http/notify.mjs');
+    let cfg;
+    try { cfg = loadConfig(); } catch (e) { throw new Error(e instanceof ConfigError ? e.message : e.stack); }
+    const gotify = createGotify({ url: cfg.gotifyUrl, token: cfg.gotifyToken, priority: cfg.gotifyPriority });
+    if (!gotify.isConfigured()) throw new Error('No notification provider is configured. Set GOTIFY_URL and GOTIFY_TOKEN.');
+    const r = await gotify.send(testPayload(cfg.publicUrl));
+    if (!r.ok) throw new Error(`gotify: ${r.error}`);
+    process.stdout.write(`gotify: sent to ${gotify.target}\n`);
   } else if (cmd === 'sessions' && sub === 'revoke-all') {
     await withStore((s) => { s.deleteAllSessions(); s.audit('sessions.revoke-all', { detail: 'cli' }); process.stdout.write('all sessions revoked\n'); });
   } else {
-    process.stderr.write('usage: node selfhost/cli.mjs hash-password | totp-setup [label] | token create <label> | token list | token revoke <id> | sessions revoke-all | backup | restore <file> [--force]\n');
+    process.stderr.write('usage: node selfhost/cli.mjs hash-password | totp-setup [label] | token create <label> | token list | token revoke <id> | sessions revoke-all | backup | restore <file> [--force] | notify-test\n');
     process.exit(2);
   }
 } catch (e) {

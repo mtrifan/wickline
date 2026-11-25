@@ -5,8 +5,11 @@ import { mkdtempSync, mkdirSync, symlinkSync, rmSync, writeFileSync, readdirSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { openDatabase } from '../../storage/db.mjs';
-import { runBackup, listBackups, startBackupScheduler, holdServerLock, activeServerLock, inspectBackup, restoreDatabase, RestoreError, sweepTemporaryFiles } from '../../storage/backup.mjs';
+import { openDatabase, loadMigrations } from '../../storage/db.mjs';
+
+const SCHEMA = loadMigrations().length; // the current schema version
+const AFTER_PHASE_1 = loadMigrations().slice(1).map((m) => m.name); // what a Phase 1 database runs
+import { runBackup, listBackups, startBackupScheduler, holdServerLock, activeServerLock, inspectBackup, restoreDatabase, RestoreError, sweepTemporaryFiles, DataDirInUseError } from '../../storage/backup.mjs';
 import { createSyncState } from '../../sync/state.mjs';
 
 function withDir(fn) {
@@ -73,7 +76,7 @@ test('restore replaces the database, saves the previous one and starts a new epo
   db.close();
 
   const r = restoreDatabase(dir, backup);
-  assert.equal(r.version, 2);
+  assert.equal(r.version, SCHEMA);
   assert.match(r.saved, /backups\/pre-restore-\d{8}-\d{6}\.db$/);
   assert.deepEqual(keysOf(dir), { watchlist: '["AAPL"]' });
   assert.notEqual(epochOf(dir), before);
@@ -92,7 +95,7 @@ test('restore refuses a running server, damaged or foreign files, newer schemas 
 
   const lock = holdServerLock(dir);
   refused(() => restoreDatabase(dir, good), /is running/);
-  assert.equal(restoreDatabase(dir, good, { force: true }).version, 2, '--force overrides');
+  assert.equal(restoreDatabase(dir, good, { force: true }).version, SCHEMA, '--force overrides');
   lock.release();
 
   const garbage = path.join(root, 'garbage.db');
@@ -107,7 +110,7 @@ test('restore refuses a running server, damaged or foreign files, newer schemas 
   refused(() => restoreDatabase(dir, newer), /newer than this release/);
   refused(() => restoreDatabase(dir, path.join(dir, 'wickline.db')), /live database/);
   refused(() => restoreDatabase(dir, path.join(root, 'missing.db')), /No such file/);
-  assert.equal(inspectBackup(good).version, 2);
+  assert.equal(inspectBackup(good).version, SCHEMA);
 }));
 
 test('a Phase 1 backup restores and is migrated on the next start', () => withDir((root) => {
@@ -121,7 +124,7 @@ test('a Phase 1 backup restores and is migrated on the next start', () => withDi
   const r = restoreDatabase(dir, path.join(p1, 'wickline.db'));
   assert.deepEqual([r.version, r.epoch], [1, null]);
   const { migrated, db } = openDatabase(dir);
-  assert.deepEqual(migrated, ['002_sync.sql']);
+  assert.deepEqual(migrated, AFTER_PHASE_1);
   db.close();
 }));
 
@@ -224,4 +227,23 @@ test('the sweep skips dangling links instead of failing startup', () => withDir(
   mkdirSync(path.join(dir, 'backups'), { recursive: true });
   symlinkSync(path.join(dir, 'missing'), path.join(dir, 'backups', '.download-dead01.db'));
   assert.deepEqual(sweepTemporaryFiles(dir), []);
+}));
+
+test('the data-directory lock: another container or a live process is refused; a dead holder or a stale lock is taken over', () => withDir((dir) => {
+  const first = holdServerLock(dir, { host: 'container-a', pid: 100, isAlive: () => true });
+  assert.throws(() => holdServerLock(dir, { host: 'container-b', pid: 1 }), (e) => e instanceof DataDirInUseError && /host container-a/.test(e.message));
+  assert.throws(() => holdServerLock(dir, { host: 'container-a', pid: 200, isAlive: () => true }), (e) => e instanceof DataDirInUseError && /process 100 on this host/.test(e.message));
+  // the same container after a crash: the old process is gone (or its PID is reused by the new one)
+  holdServerLock(dir, { host: 'container-a', pid: 300, isAlive: () => false });
+  assert.equal(activeServerLock(dir).pid, 300);
+  holdServerLock(dir, { host: 'container-a', pid: 300, isAlive: () => true });
+  // a stale lock from another container (stopped uncleanly more than 90 s ago)
+  const old = new Date(Date.now() - 120_000);
+  utimesSync(path.join(dir, 'server.lock'), old, old);
+  const b = holdServerLock(dir, { host: 'container-b', pid: 1 });
+  assert.equal(activeServerLock(dir).host, 'container-b');
+  first.release(); // taken over: must not remove container-b's lock
+  assert.equal(activeServerLock(dir).host, 'container-b');
+  b.release();
+  assert.equal(existsSync(path.join(dir, 'server.lock')), false);
 }));
