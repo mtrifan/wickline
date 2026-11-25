@@ -52,7 +52,7 @@ function resolveTrigger(b, o, t, { last, baseVersion, dualWindowMs }) {
     if (!sawServer) return keep; // the server recorded a trigger the client did not see: same arming
     // Re-armed elsewhere after a trigger this client's base predates: the same crossing, reported
     // late. A client whose base includes that trigger (and the re-arm) reports a new crossing.
-    const stale = last && last.at !== bT && (last.version == null || baseVersion < last.version);
+    const stale = last && last.at !== bT && last.version != null && baseVersion < last.version;
     if (stale && Math.abs(tT - last.at) <= dualWindowMs) return keep;
     return { fields: pick(t), trigger: tT };
   }

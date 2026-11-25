@@ -104,10 +104,11 @@ test('a browser-detected alert trigger is pushed once, however many browsers rep
   const alert = { id: 'k1', symbol: 'BINANCE:BTCUSDT', condition: 'up', price: 100000, message: 'moon', active: true, created: 1 };
   assert.equal((await put([alert], 0)).status, 200);
   const fired = (at, p) => ({ ...alert, active: false, triggeredAt: at, triggerPrice: p });
-  assert.equal((await put([fired(5000, 100010)], 1)).status, 200);
+  const t0 = Date.now();
+  assert.equal((await put([fired(t0, 100010)], 1)).status, 200);
   // A second device detected the same crossing from the same base.
-  const second = await (await put([fired(5040, 100020)], 1)).json();
-  assert.deepEqual(JSON.parse(second.value), [fired(5000, 100010)], 'the second device adopts the recorded trigger');
+  const second = await (await put([fired(t0 + 40, 100020)], 1)).json();
+  assert.deepEqual(JSON.parse(second.value), [fired(t0, 100010)], 'the second device adopts the recorded trigger');
   for (let i = 0; i < 50 && g.requests.length < 1; i++) await new Promise((r) => setTimeout(r, 20));
   await new Promise((r) => setTimeout(r, 100));
   assert.equal(g.requests.length, 1);

@@ -53,10 +53,10 @@ export function createAlertLedger(db, { outbox, publicUrl = null, now = Date.now
   const lastTriggerAt = (id) => lastTrigger(id)?.at ?? null;
 
   /** Records a trigger (in the alerts value's `version`) and queues its push, in the caller's transaction. */
-  function record(alert, source, version) {
+  function record(alert, source, version, push = true) {
     const key = triggerKey(alert.id, alert.triggeredAt);
     q.setTrigger.run(alert.id, key, version);
-    const n = outbox ? outbox.insert(`alert:${key}`, alertPayload(alert, publicUrl)) : 0;
+    const n = outbox && push ? outbox.insert(`alert:${key}`, alertPayload(alert, publicUrl)) : 0;
     if (n) queued = true;
     log?.info('alert triggered', { id: alert.id, symbol: alert.symbol, source, queued: n });
   }
@@ -75,7 +75,8 @@ export function createAlertLedger(db, { outbox, publicUrl = null, now = Date.now
       q.purge.run(now() - TOMBSTONE_MS);
       const r = mergeAlerts({ base: b, ours, theirs, baseVersion, isTombstoned, lastTrigger, now: now(), dualWindowMs, recentMs });
       tombstone(r.removed);
-      for (const a of r.triggers) record(a, 'browser', nextVersion);
+      // A trigger reported long after it happened (a device back from days offline) is recorded, not pushed.
+      for (const a of r.triggers) record(a, 'browser', nextVersion, Math.abs(now() - a.triggeredAt) <= recentMs);
       const out = JSON.stringify(r.merged);
       return out === JSON.stringify(theirs) ? value : out; // keep the client's exact text when nothing changed
     },

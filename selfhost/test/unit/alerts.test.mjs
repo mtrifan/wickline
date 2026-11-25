@@ -108,6 +108,7 @@ test('the notification mirrors upstream\'s toast and links to the chart', () => 
 // ---- with the database -----------------------------------------------------------------------
 
 function setup({ maxTotalChars, now = () => clock.t } = {}) {
+  clock.t = 100_000; // the trigger times below are "just now" (within RECENT_MS)
   const dir = mkdtempSync(path.join(tmpdir(), 'wl-alerts-'));
   dirs.push(dir);
   const { db } = openDatabase(dir);
@@ -123,7 +124,7 @@ function setup({ maxTotalChars, now = () => clock.t } = {}) {
   const version = () => sync.snapshot().keys.alerts.ver;
   return { db, sync, ledger, rows, write, current, version, changes };
 }
-const clock = { t: 1_000_000 };
+const clock = { t: 100_000 };
 
 test('a browser trigger is recorded and queued exactly once', () => {
   const s = setup();
@@ -233,6 +234,15 @@ test('the push is queued even if waking the outbox fails after the commit', () =
   } finally { hook.afterCommit = orig; }
   assert.equal(s.changes.length, changes + 1, 'still broadcast');
   assert.equal(s.rows().length, 1);
+});
+
+test('a trigger reported long after it happened is recorded but not pushed', () => {
+  const s = setup();
+  s.write([armed('a')], 0);
+  s.write([fired('a', clock.t - 3 * 86_400_000)], 1);
+  assert.equal(s.current()[0].active, false);
+  assert.equal(s.ledger.lastTriggerAt('a'), clock.t - 3 * 86_400_000);
+  assert.equal(s.rows().length, 0);
 });
 
 test('a refused write records no trigger and queues nothing', () => {
