@@ -15,8 +15,11 @@ export const MAX_VALUE_CHARS = 5_000_000;
  */
 export const MAX_TOTAL_CHARS = 10_000_000;
 export const MAX_KEYS = 5_000;
-/** Versions of each merged key kept for three-way merges. */
+/** Rows including tombstones. Beyond it the oldest tombstones are pruned (see meta.pruned_rev). */
+export const MAX_ROWS = 10_000;
+/** Versions of each merged key kept for three-way merges, within a size budget per key. */
 export const HISTORY_DEPTH = 20;
+export const HISTORY_MAX_CHARS = 2_000_000;
 
 /** A refused write. `body` is sent to the client as JSON with `status`. */
 export class SyncError extends Error {
@@ -25,7 +28,7 @@ export class SyncError extends Error {
 
 const newEpoch = () => randomBytes(8).toString('hex');
 
-export function createSyncState(db, { syncWorkspace = true, now = Date.now, log, maxTotalChars = MAX_TOTAL_CHARS, maxKeys = MAX_KEYS } = {}) {
+export function createSyncState(db, { syncWorkspace = true, now = Date.now, log, maxTotalChars = MAX_TOTAL_CHARS, maxKeys = MAX_KEYS, maxRows = MAX_ROWS } = {}) {
   const opts = { syncWorkspace };
   const listeners = new Set();
   const epochListeners = new Set();
@@ -36,17 +39,42 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
     nextRev: db.prepare("UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'state_rev' RETURNING CAST(value AS INTEGER) AS rev"),
     row: db.prepare('SELECT value, deleted, version, rev FROM kv_state WHERE key = ?'),
     all: db.prepare('SELECT key, value, deleted, version, rev, updated_by FROM kv_state WHERE rev > ? ORDER BY rev'),
-    upsert: db.prepare(`INSERT INTO kv_state (key, value, deleted, version, rev, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT (key) DO UPDATE SET value = excluded.value, deleted = excluded.deleted, version = excluded.version,
+    upsert: db.prepare(`INSERT INTO kv_state (key, value, size, deleted, version, rev, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (key) DO UPDATE SET value = excluded.value, size = excluded.size, deleted = excluded.deleted, version = excluded.version,
       rev = excluded.rev, updated_at = excluded.updated_at, updated_by = excluded.updated_by`),
     history: db.prepare('SELECT value FROM kv_history WHERE key = ? AND version = ?'),
-    addHistory: db.prepare('INSERT OR REPLACE INTO kv_history (key, version, value, created_at) VALUES (?, ?, ?, ?)'),
+    addHistory: db.prepare('INSERT OR REPLACE INTO kv_history (key, version, value, size, created_at) VALUES (?, ?, ?, ?, ?)'),
     pruneHistory: db.prepare('DELETE FROM kv_history WHERE key = ? AND version <= ?'),
-    usage: db.prepare('SELECT COALESCE(SUM(length(value)), 0) AS chars, COUNT(*) FILTER (WHERE deleted = 0) AS keys FROM kv_state'),
+    historySizes: db.prepare('SELECT version, size FROM kv_history WHERE key = ? ORDER BY version DESC'),
+    // A workspace stored before SYNC_WORKSPACE=false neither syncs nor counts.
+    usage: db.prepare('SELECT COALESCE(SUM(size), 0) AS chars, COUNT(*) FILTER (WHERE deleted = 0) AS keys, COUNT(*) AS rows FROM kv_state WHERE key != ?'),
+    oldestTombstones: db.prepare('SELECT key, rev FROM kv_state WHERE deleted = 1 ORDER BY rev LIMIT ?'),
+    deleteRow: db.prepare('DELETE FROM kv_state WHERE key = ?'),
   };
 
   const epoch = () => q.meta.get('epoch').value;
   const rev = () => Number(q.meta.get('state_rev').value);
+  const prunedRev = () => Number(q.meta.get('pruned_rev')?.value ?? 0);
+  const excluded = syncWorkspace ? '' : 'workspace';
+
+  /** Removes the oldest tombstones so that `room` more rows fit under maxRows. */
+  function pruneTombstones(rows, room) {
+    const over = rows + room - maxRows;
+    if (over <= 0) return;
+    let floor = prunedRev();
+    for (const t of q.oldestTombstones.all(over)) { q.deleteRow.run(t.key); floor = Math.max(floor, t.rev); }
+    q.setMeta.run('pruned_rev', String(floor));
+  }
+
+  /** Keeps the newest HISTORY_DEPTH versions of a key, and only as many as fit HISTORY_MAX_CHARS. */
+  function pruneHistory(key, version) {
+    q.pruneHistory.run(key, version - HISTORY_DEPTH);
+    let total = 0;
+    for (const [i, h] of q.historySizes.all(key).entries()) {
+      total += h.size;
+      if (i > 0 && total > HISTORY_MAX_CHARS) { q.pruneHistory.run(key, h.version); break; }
+    }
+  }
   const synced = (key) => { const p = policyFor(key, opts); return p !== null && p !== 'local'; };
   const toChange = (r) => ({ key: r.key, v: r.deleted ? null : r.value, ver: r.version, deleted: !!r.deleted, rev: r.rev, by: r.updated_by || null });
 
@@ -107,20 +135,21 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
         if (unchanged(stored)) return { version: curVer, rev: row.rev, deleted: false, changed: false, value: stored };
       }
 
+      const use = q.usage.get(excluded);
       if (stored !== null) {
-        const use = q.usage.get();
         const chars = Number(use.chars) - (cur ? cur.length : 0) + stored.length;
         const keys = Number(use.keys) + (curDeleted ? 1 : 0);
         if (chars > maxTotalChars || keys > maxKeys) throw new SyncError(413, { error: 'Synced state quota exceeded' });
       }
+      if (!row) pruneTombstones(Number(use.rows), 1);
 
       const version = curVer + 1;
       const { rev: next } = q.nextRev.get();
       const at = now();
-      q.upsert.run(key, stored, del ? 1 : 0, version, next, at, clientId);
+      q.upsert.run(key, stored, stored === null ? 0 : stored.length, del ? 1 : 0, version, next, at, clientId);
       if (policy === 'merge') {
-        q.addHistory.run(key, version, stored, at);
-        q.pruneHistory.run(key, version - HISTORY_DEPTH);
+        q.addHistory.run(key, version, stored, stored === null ? 0 : stored.length, at);
+        pruneHistory(key, version);
       }
       const out = { version, rev: next, deleted: del, changed: true, change: { key, v: stored, ver: version, deleted: del, rev: next, by: clientId } };
       if (stored !== value) out.value = stored;
@@ -154,5 +183,5 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
   /** Calls fn(change) after every committed change. Returns an unsubscribe function. */
   function onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
-  return { epoch, rev, snapshot, write, changesSince, resetEpoch, onChange, onEpoch, policyFor: (k) => policyFor(k, opts) };
+  return { epoch, rev, prunedRev, snapshot, write, changesSince, resetEpoch, onChange, onEpoch, policyFor: (k) => policyFor(k, opts) };
 }

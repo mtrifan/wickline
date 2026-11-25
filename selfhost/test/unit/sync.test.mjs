@@ -76,8 +76,11 @@ test('three-way merge: entries without `updated` (alerts) merge field by field',
   assert.deepEqual(mergeIdArrays(base, ours, theirs), [s('x', { price: 2, active: false, triggeredAt: 99 })]);
   // a field changed on both sides takes the client's value; fields removed on one side go
   assert.deepEqual(mergeIdArrays([s('y', { price: 1, note: 'n' })], [s('y', { price: 3, note: 'n' })], [s('y', { price: 4 })]), [s('y', { price: 4 })]);
-  // no base entry (added on both sides): the client's copy
-  assert.deepEqual(mergeIdArrays([], [s('z', { price: 1 })], [s('z', { price: 2 })]), [s('z', { price: 2 })]);
+  // no base entry to compare: the server's copy (its trigger fields are authoritative)
+  assert.deepEqual(mergeIdArrays([], [s('z', { price: 1 })], [s('z', { price: 2 })]), [s('z', { price: 1 })]);
+  // a "__proto__" field is an ordinary field, not a prototype change
+  const [m] = mergeIdArrays([JSON.parse('{"id":"p","__proto__":{"a":1}}')], [JSON.parse('{"id":"p","__proto__":{"a":2}}')], [JSON.parse('{"id":"p","__proto__":{"a":1},"n":1}')]);
+  assert.equal(JSON.stringify(m), '{"id":"p","__proto__":{"a":2},"n":1}');
 });
 
 test('three-way merge: an edit beats a concurrent deletion', () => {
@@ -86,8 +89,11 @@ test('three-way merge: an edit beats a concurrent deletion', () => {
   assert.deepEqual(mergeIdArrays(base, [s('a', { name: 'kept' }), s('b')], [s('b')]), [s('a', { name: 'kept' }), s('b')]);
 });
 
-test('merge without a base infers no deletions', () => {
+test('merge without a base infers no deletions and keeps the server copy of shared entries', () => {
   assert.deepEqual(mergeIdArrays(null, [s('a'), s('b')], [s('b'), s('c')]), [s('a'), s('b'), s('c')]);
+  assert.deepEqual(mergeIdArrays(null, [s('x', { active: false, triggeredAt: 9 })], [s('x', { active: true }), s('y')]),
+    [s('x', { active: false, triggeredAt: 9 }), s('y')]);
+  assert.deepEqual(mergeIdArrays(null, [s('x', { updated: 1 })], [s('x', { updated: 2, name: 'new' })]), [s('x', { updated: 2, name: 'new' })]);
 });
 
 // --- state store -------------------------------------------------------------------------------
@@ -180,6 +186,40 @@ test('the synced-state quota limits total characters and live keys', () => withS
   refused(() => st.write('heatmap', { value: 'v', baseVersion: 0, epoch }), 413, 'Synced state quota exceeded');
   assert.equal(st.write('theme', { value: 'w', baseVersion: 1, epoch }).version, 2, 'existing keys can still change');
 }));
+
+test('tombstones beyond the row cap are pruned oldest first, and the pruned rev is recorded', () => withState({ maxRows: 5 }, (st, db) => {
+  const epoch = st.epoch();
+  for (let i = 0; i < 8; i++) {
+    st.write(`drawings.S${i}`, { value: '[]', baseVersion: 0, epoch });
+    st.write(`drawings.S${i}`, { value: null, baseVersion: 1, epoch });
+  }
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM kv_state').get().n, 5);
+  assert.deepEqual(Object.keys(st.snapshot().keys), ['drawings.S3', 'drawings.S4', 'drawings.S5', 'drawings.S6', 'drawings.S7']);
+  assert.equal(st.prunedRev(), 6, 'drawings.S2 was deleted at rev 6');
+}));
+
+test('merge history is also capped by size per key', () => withState({}, (st, db) => {
+  const epoch = st.epoch();
+  const big = (id) => JSON.stringify([{ id, pad: 'x'.repeat(600_000) }]);
+  for (let i = 1; i <= 6; i++) st.write('scripts', { value: big(`e${i}`), baseVersion: i - 1, epoch });
+  const rows = db.prepare("SELECT version, size FROM kv_history WHERE key = 'scripts' ORDER BY version").all();
+  assert.deepEqual(rows.map((r) => r.version), [4, 5, 6]);
+  assert.ok(rows.reduce((n, r) => n + r.size, 0) <= 2_000_000);
+}));
+
+test('a workspace kept from before SYNC_WORKSPACE=false does not count toward the quota', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'wl-sync-'));
+  try {
+    let { db } = openDatabase(dir);
+    const on = createSyncState(db);
+    on.write('workspace', { value: 'x'.repeat(90), baseVersion: 0, epoch: on.epoch() });
+    db.close();
+    ({ db } = openDatabase(dir));
+    const off = createSyncState(db, { syncWorkspace: false, maxTotalChars: 100 });
+    assert.equal(off.write('theme', { value: 'x'.repeat(50), baseVersion: 0, epoch: off.epoch() }).version, 1);
+    db.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('a listener that throws does not fail a committed write', () => withState({}, (st) => {
   st.onChange(() => { throw new Error('boom'); });

@@ -359,3 +359,35 @@ test('the event hub refuses streams beyond its limit', async () => {
   assert.deepEqual([a.status, b.status, hub.size], [200, 503, 1]);
   hub.close();
 });
+
+test('an empty since or Last-Event-ID counts as absent', async () => {
+  const ctx = await start();
+  const { epoch } = await snapshot(ctx);
+  await put(ctx, 'theme', { value: 'a', baseVersion: 0, epoch });
+  for (const [query, headers] of [[{ epoch, since: '' }, {}], [{ epoch }, { 'last-event-id': '' }]]) {
+    const s = stream(ctx, query, headers);
+    await s.until(() => s.events.length === 1);
+    assert.equal(s.events[0].event, 'change');
+    assert.equal(s.ended, false);
+    s.close();
+  }
+});
+
+test('a resume from before a pruned tombstone is reset; a full replay is not', async () => {
+  const ctx = await start();
+  const { epoch } = await snapshot(ctx);
+  await put(ctx, 'theme', { value: 'a', baseVersion: 0, epoch });
+  ctx.app.db.prepare("UPDATE meta SET value = '1' WHERE key = 'pruned_rev'").run();
+  await put(ctx, 'lang', { value: 'en', baseVersion: 0, epoch });
+  const fromZero = stream(ctx, { epoch, since: 0 });
+  await fromZero.until(() => fromZero.events.length === 2);
+  fromZero.close();
+  const fromOne = stream(ctx, { epoch, since: 1 });
+  await fromOne.until(() => fromOne.events.length === 1);
+  assert.equal(fromOne.events[0].event, 'change', 'since == pruned_rev missed nothing');
+  fromOne.close();
+  ctx.app.db.prepare("UPDATE meta SET value = '2' WHERE key = 'pruned_rev'").run();
+  const stale = stream(ctx, { epoch, since: 1 });
+  await stale.until(() => stale.ended);
+  assert.equal(stale.events[0].event, 'reset');
+});

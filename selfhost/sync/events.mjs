@@ -75,9 +75,12 @@ export function createEventHub(state, { maxClients = 32, heartbeatMs = HEARTBEAT
     const reset = () => { res.end(frame('reset', { epoch: state.epoch(), rev: state.rev() })); };
     const epoch = url.searchParams.get('epoch');
     if (epoch !== state.epoch()) return reset();
-    const raw = req.headers['last-event-id'] ?? url.searchParams.get('since') ?? '0';
+    // Empty counts as absent (EventSource sends an empty Last-Event-ID before its first event id).
+    const raw = req.headers['last-event-id'] || url.searchParams.get('since') || '0';
     const since = /^\d{1,15}$/.test(String(raw)) ? Number(raw) : NaN;
     if (!Number.isSafeInteger(since) || since > state.rev()) return reset();
+    // Tombstones up to prunedRev were pruned: a resume from before then may have missed one.
+    if (since > 0 && since < state.prunedRev()) return reset();
 
     // Replay and subscribe in the same tick: writes are synchronous, so none can fall in between.
     const backlog = [];
