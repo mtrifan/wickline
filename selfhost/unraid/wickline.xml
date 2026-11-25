@@ -29,6 +29,9 @@
   <Config Name="Trust proxy" Target="TRUST_PROXY" Default="false|true|2" Mode="" Description="Number of reverse proxies in front (Tailscale Serve, NPM, Caddy, Cloudflare Tunnel). false when accessed directly." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
   <Config Name="Trusted proxy addresses" Target="TRUSTED_PROXY_IPS" Default="" Mode="" Description="IPs/CIDRs of your reverse proxy (comma-separated). Empty = loopback and private networks. Set it explicitly in public mode." Type="Variable" Display="advanced" Required="false" Mask="false"/>
   <Config Name="Outbound proxy" Target="WICKLINE_PROXY" Default="" Mode="" Description="HTTP or SOCKS5 proxy for market data, if Yahoo/Binance are blocked." Type="Variable" Display="advanced" Required="false" Mask="false"/>
+  <Config Name="Sync chart layout" Target="SYNC_WORKSPACE" Default="true|false" Mode="" Description="Share the chart layout between devices. false keeps a separate layout per device." Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
+  <Config Name="Backup interval (hours)" Target="BACKUP_INTERVAL_HOURS" Default="24" Mode="" Description="Hours between automatic backups to /data/backups. 0 turns them off." Type="Variable" Display="advanced" Required="false" Mask="false">24</Config>
+  <Config Name="Backups kept" Target="BACKUP_KEEP" Default="14" Mode="" Description="How many automatic backups are kept." Type="Variable" Display="advanced" Required="false" Mask="false">14</Config>
   <Config Name="Log level" Target="LOG_LEVEL" Default="info|debug|warn|error" Mode="" Description="" Type="Variable" Display="advanced" Required="false" Mask="false">info</Config>
   <Config Name="Time zone" Target="TZ" Default="UTC" Mode="" Description="" Type="Variable" Display="advanced" Required="false" Mask="false">UTC</Config>
 </Container>

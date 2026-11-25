@@ -75,6 +75,8 @@ export function loadConfig(env = process.env, { readFile = readFileSync } = {}) 
     logLevel: (env.LOG_LEVEL || 'info').toLowerCase(),
     testMode: bool(env.SELFHOST_TEST_MODE),
     syncWorkspace: bool(env.SYNC_WORKSPACE, true),
+    backupIntervalHours: int(env, 'BACKUP_INTERVAL_HOURS', 24, { min: 0, max: 24 * 30 }, problems),
+    backupKeep: int(env, 'BACKUP_KEEP', 14, { min: 1, max: 1000 }, problems),
   };
 
   if (!['debug', 'info', 'warn', 'error'].includes(cfg.logLevel)) problems.push('LOG_LEVEL must be debug, info, warn or error');

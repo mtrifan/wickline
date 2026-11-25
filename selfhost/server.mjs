@@ -23,6 +23,8 @@ import { loginPage } from './http/pages.mjs';
 import { createSyncState } from './sync/state.mjs';
 import { createEventHub } from './sync/events.mjs';
 import { createSyncRoutes } from './sync/routes.mjs';
+import { createAdminRoutes } from './http/admin.mjs';
+import { holdServerLock, startBackupScheduler, sweepTemporaryFiles } from './storage/backup.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const COOKIE = 'wl_session';
@@ -49,6 +51,10 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   if (proxy.url) { await proxyMod.setServerProxy(proxy.url); log.info('outbound traffic goes through a proxy', { proxy: proxy.url.replace(/\/\/[^@/]*@/, '//') }); }
 
   const { db, version: schema, migrated, backup } = openDatabase(cfg.dataDir, { log });
+  const lock = holdServerLock(cfg.dataDir); // `cli.mjs restore` refuses while this is fresh
+  const swept = sweepTemporaryFiles(cfg.dataDir);
+  if (swept.length) log.info('removed temporary files left by an interrupted download or restore', { files: swept });
+  const backups = startBackupScheduler({ db, dataDir: cfg.dataDir, intervalHours: cfg.backupIntervalHours, keep: cfg.backupKeep, log });
   const store = createAuthStore(db, { sessionDays: cfg.sessionDays });
   store.purgeExpired();
   const purgeTimer = setInterval(() => store.purgeExpired(), 3600_000).unref();
@@ -57,6 +63,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   const indexHtml = readFileSync(path.join(ROOT, 'public/index.html'), 'utf8');
   const bootJs = readFileSync(path.join(ROOT, 'selfhost/public/boot.js'));
   const keyConfig = clientKeyConfig({ syncWorkspace: cfg.syncWorkspace });
+  const handleAdmin = createAdminRoutes({ state: sync, db, dataDir: cfg.dataDir, version: VERSION, log });
   const hub = createEventHub(sync);
   const handleSync = createSyncRoutes({
     state: sync,
@@ -155,7 +162,10 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     // Public mode: refuse anything that did not arrive over HTTPS at the trusted proxy.
     if (cfg.exposure === 'public' && info.proto !== 'https') return sendJson(res, 403, { error: 'HTTPS required' });
 
-    if (!sameOrigin(req, info)) return sendJson(res, 403, { error: 'Cross-origin request refused' });
+    // A Bearer token is its own CSRF defence: browsers never attach one by themselves, and a
+    // cross-site script cannot send one (the CORS preflight fails). Scripts need no Origin header.
+    const bearer = cfg.authMode === 'password' && cfg.allowApiTokens && String(req.headers.authorization || '').startsWith('Bearer ');
+    if (!bearer && !sameOrigin(req, info)) return sendJson(res, 403, { error: 'Cross-origin request refused' });
 
     if (url.pathname === '/selfhost/login' && (req.method === 'GET' || req.method === 'POST')) return handleLogin(req, res, info);
 
@@ -185,6 +195,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
       return res.end(req.method === 'HEAD' ? undefined : bootJs);
     }
     if (url.pathname.startsWith('/api/selfhost/') && (await handleSync(req, res, url, auth)) !== false) return undefined;
+    if (url.pathname.startsWith('/api/selfhost/') && (await handleAdmin(req, res, url)) !== false) return undefined;
     if (url.pathname.startsWith('/api/selfhost/') || url.pathname.startsWith('/selfhost/')) return sendJson(res, 404, { error: 'Not found' });
 
     // Upstream's app and API (GET only upstream; it answers 405 to anything else).
@@ -217,6 +228,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     closing = (async () => {
       const done = new Promise((r) => server.close(() => r()));
       hub.close();
+      backups.stop();
       // Long-lived streams (SSE) never end on their own.
       server.closeIdleConnections();
       setTimeout(() => server.closeAllConnections(), 1000).unref();
@@ -224,6 +236,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
       clearInterval(purgeTimer);
       try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* best effort */ }
       db.close();
+      lock.release();
       log.info('stopped');
     })();
     return closing;
