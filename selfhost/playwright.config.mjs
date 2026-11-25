@@ -10,10 +10,13 @@ export const UPSTREAM_PORT = 5186;
 export const PASSWORD = 'correct horse battery staple';
 export const TOTP_PORT = 5187;
 export const TOTP_SECRET = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP'; // test-only
+export const SYNC_PORT = 5188;
 const dataDir = process.env.E2E_DATA_DIR || mkdtempSync(path.join(tmpdir(), 'wl-e2e-'));
 process.env.E2E_DATA_DIR = dataDir; // shared with worker processes
 const totpDir = process.env.E2E_TOTP_DIR || mkdtempSync(path.join(tmpdir(), 'wl-e2e-totp-'));
 process.env.E2E_TOTP_DIR = totpDir;
+const syncDir = process.env.E2E_SYNC_DIR || mkdtempSync(path.join(tmpdir(), 'wl-e2e-sync-'));
+process.env.E2E_SYNC_DIR = syncDir;
 
 export default defineConfig({
   testDir: 'test/e2e',
@@ -41,6 +44,12 @@ export default defineConfig({
       command: 'node --disable-warning=ExperimentalWarning server.mjs',
       url: `http://127.0.0.1:${TOTP_PORT}/api/health/ready`,
       env: { PORT: String(TOTP_PORT), HOST: '127.0.0.1', DATA_DIR: totpDir, WICKLINE_PASSWORD: PASSWORD, WICKLINE_TOTP_SECRET: TOTP_SECRET, LOG_LEVEL: 'warn' },
+      reuseExistingServer: false,
+    },
+    {
+      command: 'node --disable-warning=ExperimentalWarning server.mjs',
+      url: `http://127.0.0.1:${SYNC_PORT}/api/health/ready`,
+      env: { PORT: String(SYNC_PORT), HOST: '127.0.0.1', DATA_DIR: syncDir, WICKLINE_PASSWORD: PASSWORD, LOG_LEVEL: 'warn' },
       reuseExistingServer: false,
     },
     {
