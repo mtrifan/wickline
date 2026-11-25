@@ -7,6 +7,8 @@
 import http from 'node:http';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
+import { injectBoot, isIndexPath } from './http/inject.mjs';
+import { clientKeyConfig } from './sync/key-policy.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { loadConfig, redacted, ConfigError } from './config.mjs';
 import { createLogger } from './log.mjs';
@@ -51,6 +53,10 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   store.purgeExpired();
   const purgeTimer = setInterval(() => store.purgeExpired(), 3600_000).unref();
   const sync = createSyncState(db, { syncWorkspace: cfg.syncWorkspace, log });
+  // Read once: upstream files change only with a new image.
+  const indexHtml = readFileSync(path.join(ROOT, 'public/index.html'), 'utf8');
+  const bootJs = readFileSync(path.join(ROOT, 'selfhost/public/boot.js'));
+  const keyConfig = clientKeyConfig({ syncWorkspace: cfg.syncWorkspace });
   const hub = createEventHub(sync);
   const handleSync = createSyncRoutes({
     state: sync,
@@ -168,6 +174,15 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     if (route === 'POST /selfhost/logout') return handleLogout(req, res, info, auth);
     if (route === 'GET /api/selfhost/session') {
       return sendJson(res, 200, { authenticated: true, via: auth.kind, exposure: cfg.exposure, totp: !!cfg.totpSecret, version: VERSION, schema });
+    }
+    if ((req.method === 'GET' || req.method === 'HEAD') && isIndexPath(url.pathname)) {
+      const html = injectBoot(indexHtml, { ...sync.snapshot(), sync: keyConfig });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Length': Buffer.byteLength(html) });
+      return res.end(req.method === 'HEAD' ? undefined : html);
+    }
+    if ((req.method === 'GET' || req.method === 'HEAD') && url.pathname === '/selfhost/boot.js') {
+      res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache', 'Content-Length': bootJs.length });
+      return res.end(req.method === 'HEAD' ? undefined : bootJs);
     }
     if (url.pathname.startsWith('/api/selfhost/') && (await handleSync(req, res, url, auth)) !== false) return undefined;
     if (url.pathname.startsWith('/api/selfhost/') || url.pathname.startsWith('/selfhost/')) return sendJson(res, 404, { error: 'Not found' });

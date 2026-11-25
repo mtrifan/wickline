@@ -391,3 +391,28 @@ test('a resume from before a pruned tombstone is reset; a full replay is not', a
   await stale.until(() => stale.ended);
   assert.equal(stale.events[0].event, 'reset');
 });
+
+test('index.html carries the escaped snapshot and loads boot.js first; boot.js is served', async () => {
+  const ctx = await start();
+  const { epoch } = await snapshot(ctx);
+  await put(ctx, 'watchlist', { value: '["</script><script>x</script>"]', baseVersion: 0, epoch });
+  for (const p of ['/', '/index.html', '/%69ndex.html', '/?popout=1']) {
+    const r = await fetch(`${ctx.base}${p}`, { headers: { cookie: ctx.cookie } });
+    assert.equal(r.status, 200, p);
+    assert.equal(r.headers.get('cache-control'), 'no-store');
+    const html = await r.text();
+    const at = html.indexOf('<head>') + '<head>'.length;
+    assert.ok(html.slice(at).startsWith('\n<script type="application/json" id="wl-snapshot">'), p);
+    const json = JSON.parse(/id="wl-snapshot">([\s\S]*?)<\/script>/.exec(html)[1]);
+    assert.equal(json.keys.watchlist.v, '["</script><script>x</script>"]');
+    assert.ok(json.sync.exact.includes('watchlist'));
+    assert.ok(html.indexOf('/selfhost/boot.js') < html.indexOf("localStorage.getItem('wickline.theme')"), 'before the inline theme script');
+  }
+  const head = await fetch(`${ctx.base}/`, { method: 'HEAD', headers: { cookie: ctx.cookie } });
+  assert.equal(head.status, 200);
+  const js = await fetch(`${ctx.base}/selfhost/boot.js`, { headers: { cookie: ctx.cookie } });
+  assert.equal(js.status, 200);
+  assert.match(js.headers.get('content-type'), /^text\/javascript/);
+  assert.match(await js.text(), /wickline-selfhost\./);
+  assert.equal((await fetch(`${ctx.base}/selfhost/boot.js`, { redirect: 'manual' })).status, 302, 'boot.js needs a login too');
+});
