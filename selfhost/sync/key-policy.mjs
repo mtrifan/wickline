@@ -46,3 +46,16 @@ export const isSynced = (key, opts) => {
   const p = policyFor(key, opts);
   return p !== null && p !== 'local';
 };
+
+/**
+ * What the browser agent needs to know: the synced exact keys and key prefixes (without the
+ * "wickline." prefix), and the keys upstream reacts to live through `storage` events
+ * (integration point storage-listeners); every other remote change needs a reload.
+ */
+export function clientKeyConfig(opts = {}) {
+  return {
+    exact: [...exact.keys()].filter((k) => isSynced(k, opts)),
+    prefixes: prefixes.filter(([, p]) => p !== 'local').map(([prefix]) => prefix),
+    live: ['alerts', 'paper', 'scripts', 'lang'],
+  };
+}

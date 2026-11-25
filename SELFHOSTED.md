@@ -109,6 +109,17 @@ wickline.example.com {
 }
 ```
 
+## Sync between devices
+
+Your watchlist, drawings, scripts, alerts, paper account, chart layout and display settings are stored on the server and shared by every browser you sign in from. Device-specific items stay in each browser: your Twelve Data key, panel heights, the open side tab and similar UI state.
+
+- **Live updates:** alerts, the paper account, scripts and the language change on other devices within a few seconds.
+- **Everything else** (watchlist, drawings, layout, theme) needs a reload to show. A banner says "Updated on another device" with a **Reload** button. A tab in the background reloads by itself when you return to it, never while hidden.
+- **Conflicts:** if two devices change the same watchlist, drawing, layout or paper account, the first change to reach the server wins, and the other device shows "Your change on this device was replaced by a newer one". Scripts and alerts are merged entry by entry, so additions from both devices are kept.
+- **Offline:** changes are kept in the browser and sent when the server is reachable again. The dot in the bottom-right corner shows the state: green means synced, amber means saving, red means offline.
+- **Existing browser data:** the first time a browser that already holds Wickline data connects, the server's data wins. A banner offers a download of the browser's previous data. Items the server does not have yet are uploaded.
+- **Limits:** synced data is capped at 10 million characters in total. A browser holds about half of that, so this cap only stops runaway clients.
+
 ## Security model
 
 - **Login covers everything** except `/api/health/ready`, the container healthcheck, which returns only `{"ok":true}`. That includes the app, its market-data API, and upstream's `/api/health`.
@@ -141,7 +152,8 @@ See [UPGRADE.md](UPGRADE.md). In short: everything lives in the `/data` volume (
 ## Known limitations
 
 - Single user.
-- Cross-device sync is being built (Phase 2): the server stores synced state, and the browser side follows. Server-side alerts arrive in Phase 3. Until then, user data stays in each browser, as upstream.
+- Alerts are still checked only while Wickline is open in a browser tab. Server-side alerts and push notifications arrive in Phase 3.
+- Backups, export and import of synced data arrive with the next release (Phase 2c). Until then, back up the `/data` volume.
 - The content security policy is report-only, because upstream relies on an inline script and `unsafe-eval` in its script sandbox.
 
 ## Licence
