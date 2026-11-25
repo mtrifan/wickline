@@ -66,6 +66,7 @@ Everything is set through environment variables. Each secret also accepts `<NAME
 | `SESSION_DAYS` | `30` | A session expires after this many days without use. |
 | `ALLOW_API_TOKENS` | `true` | Bearer tokens for scripts (`cli.mjs token create`). In public mode they are off unless `ALLOW_API_TOKENS_PUBLIC=true`. |
 | `AUTH_MODE` | `password` | `none` disables login entirely (needs `I_UNDERSTAND_NO_AUTH=true`; never allowed in public mode). |
+| `SYNC_WORKSPACE` | `true` | Sync the chart layout (`workspace`) between devices. `false` keeps a separate layout on each device; watchlists, drawings, scripts, alerts and settings still sync. |
 | `WICKLINE_PROXY` | none | Outbound HTTP or SOCKS5 proxy for market data (also `HTTPS_PROXY`, `ALL_PROXY`). |
 | `PORT`, `HOST`, `DATA_DIR` | `5173`, `0.0.0.0`, `/data` | Listener and data location. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. Logs are JSON lines on stdout/stderr. |
@@ -140,7 +141,7 @@ See [UPGRADE.md](UPGRADE.md). In short: everything lives in the `/data` volume (
 ## Known limitations
 
 - Single user.
-- Data sync and server-side alerts arrive in Phases 2 and 3. Until then, user data stays in each browser, as upstream.
+- Cross-device sync is being built (Phase 2): the server stores synced state, and the browser side follows. Server-side alerts arrive in Phase 3. Until then, user data stays in each browser, as upstream.
 - The content security policy is report-only, because upstream relies on an inline script and `unsafe-eval` in its script sandbox.
 
 ## Licence
