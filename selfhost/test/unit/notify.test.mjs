@@ -74,12 +74,18 @@ test('Gotify: 5xx, 408, 429 and network errors are retryable; other 4xx are perm
   assert.deepEqual([hung.retryable, /no answer within 0\.3 s/.test(hung.error)], [true, true]);
 });
 
-test('Gotify never follows a redirect, so the token is not replayed to another host', async () => {
+test('Gotify never follows a redirect: the token is not replayed, and the setup error is permanent and named', async () => {
   const other = await fakeGotify([200]);
   const redirecting = await fakeGotify([302], { headers: { Location: `${other.url}/message` } });
   const r = await createGotify({ url: redirecting.url, token: 'secret' }).send({ title: 'x' });
-  assert.equal(r.ok, false);
+  assert.deepEqual([r.ok, r.retryable], [false, false]);
+  assert.match(r.error, /redirect; set GOTIFY_URL to the final address/);
   assert.equal(other.requests.length, 0);
+});
+
+test('Gotify: no Retry-After header means no server-requested delay', async () => {
+  const r = await createGotify({ url: (await fakeGotify([503])).url, token: 't' }).send({ title: 'x' });
+  assert.deepEqual([r.retryable, r.retryAfterSec], [true, null]);
 });
 
 test('Gotify bypasses the market-data proxy (WICKLINE_PROXY)', async () => {
@@ -157,4 +163,44 @@ test('outbox: pending notifications are delivered after a restart, and status ne
   assert.equal(status.providers[0].configured, true);
   assert.equal(status.last.status, 'sent');
   d2.close();
+});
+
+test('outbox: a stored time far ahead of a wrong clock does not spin the timer', async () => {
+  const { db: d } = db();
+  d.prepare("INSERT INTO notification_outbox (dedup_key, provider, payload, next_attempt_at, created_at) VALUES ('k', 'gotify', '{}', ?, 0)").run(Date.now() + 365 * 86_400_000);
+  let calls = 0;
+  const outbox = createOutbox(d, { providers: [createGotify({ url: 'http://127.0.0.1:1', token: 't' })], now: () => { calls++; return 0; } });
+  outbox.start();
+  await new Promise((r) => setTimeout(r, 200));
+  await outbox.stop();
+  assert.ok(calls < 10, `the timer spun (${calls} clock reads in 200 ms)`);
+  d.close();
+});
+
+test('outbox: stop() waits for a send in flight, up to its limit', async () => {
+  const slow = (ms) => ({ id: 'gotify', isConfigured: () => true, send: () => new Promise((r) => setTimeout(() => r({ ok: true }), ms)) });
+  {
+    const { db: d } = db();
+    const outbox = createOutbox(d, { providers: [slow(150)], log: quietLog() });
+    outbox.start();
+    outbox.enqueue('k', { title: 'x' });
+    await new Promise((r) => setTimeout(r, 30)); // the send is under way
+    await outbox.stop();
+    assert.equal(d.prepare('SELECT status FROM notification_outbox').get().status, 'sent', 'finished before shutdown');
+    d.close();
+  }
+  {
+    const { db: d } = db();
+    const log = quietLog();
+    const outbox = createOutbox(d, { providers: [slow(300)], log });
+    outbox.start();
+    outbox.enqueue('k', { title: 'x' });
+    await new Promise((r) => setTimeout(r, 30));
+    const t0 = Date.now();
+    await outbox.stop({ drainMs: 50 });
+    assert.ok(Date.now() - t0 < 200, 'gave up waiting after the limit');
+    d.close(); // as the server does; the late result must not touch the closed database
+    await new Promise((r) => setTimeout(r, 350));
+    assert.ok(log.lines.some((l) => /after shutdown/.test(l.msg)));
+  }
 });

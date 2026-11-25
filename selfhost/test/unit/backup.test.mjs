@@ -9,7 +9,7 @@ import { openDatabase, loadMigrations } from '../../storage/db.mjs';
 
 const SCHEMA = loadMigrations().length; // the current schema version
 const AFTER_PHASE_1 = loadMigrations().slice(1).map((m) => m.name); // what a Phase 1 database runs
-import { runBackup, listBackups, startBackupScheduler, holdServerLock, activeServerLock, inspectBackup, restoreDatabase, RestoreError, sweepTemporaryFiles } from '../../storage/backup.mjs';
+import { runBackup, listBackups, startBackupScheduler, holdServerLock, activeServerLock, inspectBackup, restoreDatabase, RestoreError, sweepTemporaryFiles, DataDirInUseError } from '../../storage/backup.mjs';
 import { createSyncState } from '../../sync/state.mjs';
 
 function withDir(fn) {
@@ -227,4 +227,15 @@ test('the sweep skips dangling links instead of failing startup', () => withDir(
   mkdirSync(path.join(dir, 'backups'), { recursive: true });
   symlinkSync(path.join(dir, 'missing'), path.join(dir, 'backups', '.download-dead01.db'));
   assert.deepEqual(sweepTemporaryFiles(dir), []);
+}));
+
+test('a second container on the same data directory is refused; the same container restarting is not', () => withDir((dir) => {
+  const first = holdServerLock(dir, { host: 'container-a' });
+  assert.throws(() => holdServerLock(dir, { host: 'container-b' }), DataDirInUseError);
+  const again = holdServerLock(dir, { host: 'container-a' }); // a crash and restart of the same container
+  assert.equal(activeServerLock(dir).host, 'container-a');
+  again.release();
+  first.release();
+  writeFileSync(path.join(dir, 'server.lock'), JSON.stringify({ pid: 1 })); // a lock written before hosts were recorded
+  holdServerLock(dir, { host: 'container-b' }).release();
 }));

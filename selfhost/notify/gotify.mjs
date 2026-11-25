@@ -21,7 +21,12 @@ async function describe(res) {
 }
 
 /** Seconds from a Retry-After header (delta form only), or null. */
-const retryAfter = (res) => { const n = Number(res.headers.get('retry-after')); return Number.isFinite(n) && n >= 0 ? n : null; };
+const retryAfter = (res) => {
+  const h = res.headers.get('retry-after');
+  if (h == null || h.trim() === '') return null;
+  const n = Number(h);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+};
 
 /**
  * createGotify({ url, token, priority }) -> provider
@@ -54,6 +59,10 @@ export function createGotify({ url, token, priority = 8, fetch = undiciFetch, ti
           ...(agent ? { dispatcher: agent } : {}),
         });
       } catch (e) {
+        if (e?.cause?.message === 'unexpected redirect') {
+          // A redirect is a setup problem (http -> https, a wrong path behind a proxy), not an outage.
+          return { ok: false, retryable: false, error: 'Gotify answered with a redirect; set GOTIFY_URL to the final address (for example https:// instead of http://)' };
+        }
         const reason = e?.name === 'TimeoutError' ? `no answer within ${timeoutMs / 1000} s` : (e?.cause?.code || e?.code || e?.message || 'network error');
         return { ok: false, retryable: true, error: `Could not reach Gotify at ${new URL(url).host}: ${reason}` };
       }

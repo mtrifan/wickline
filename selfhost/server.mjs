@@ -27,7 +27,7 @@ import { createAdminRoutes } from './http/admin.mjs';
 import { createNotifyRoutes } from './http/notify.mjs';
 import { createGotify } from './notify/gotify.mjs';
 import { createOutbox } from './notify/outbox.mjs';
-import { holdServerLock, startBackupScheduler, sweepTemporaryFiles } from './storage/backup.mjs';
+import { holdServerLock, startBackupScheduler, sweepTemporaryFiles, DataDirInUseError } from './storage/backup.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const COOKIE = 'wl_session';
@@ -53,8 +53,10 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   if (proxy.error) log.warn('ignoring invalid proxy setting (value not logged: it may contain credentials)', { error: proxy.error });
   if (proxy.url) { await proxyMod.setServerProxy(proxy.url); log.info('outbound traffic goes through a proxy', { proxy: proxy.url.replace(/\/\/[^@/]*@/, '//') }); }
 
-  const { db, version: schema, migrated, backup } = openDatabase(cfg.dataDir, { log });
-  const lock = holdServerLock(cfg.dataDir); // `cli.mjs restore` refuses while this is fresh
+  const lock = holdServerLock(cfg.dataDir); // before opening the database; `cli.mjs restore` refuses while it is fresh
+  let opened;
+  try { opened = openDatabase(cfg.dataDir, { log }); } catch (e) { lock.release(); throw e; }
+  const { db, version: schema, migrated, backup } = opened;
   const swept = sweepTemporaryFiles(cfg.dataDir);
   if (swept.length) log.info('removed temporary files left by an interrupted download or restore', { files: swept });
   const backups = startBackupScheduler({ db, dataDir: cfg.dataDir, intervalHours: cfg.backupIntervalHours, keep: cfg.backupKeep, log });
@@ -237,11 +239,11 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
       const done = new Promise((r) => server.close(() => r()));
       hub.close();
       backups.stop();
-      outbox.stop();
+      const drained = outbox.stop(); // a send in flight gets up to 5 s
       // Long-lived streams (SSE) never end on their own.
       server.closeIdleConnections();
       setTimeout(() => server.closeAllConnections(), 1000).unref();
-      await done;
+      await Promise.all([done, drained]);
       clearInterval(purgeTimer);
       try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* best effort */ }
       db.close();
@@ -267,8 +269,9 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
   const log = createLogger({ level: cfg.logLevel });
   let app;
   try { app = await startSelfhost(cfg, { log }); } catch (e) {
-    log.error(e instanceof DowngradeError ? e.message : 'startup failed', { error: e });
-    process.exit(e instanceof DowngradeError ? 78 : 1);
+    const known = e instanceof DowngradeError || e instanceof DataDirInUseError;
+    log.error(known ? e.message : 'startup failed', { error: e });
+    process.exit(known ? 78 : 1); // EX_CONFIG: needs the operator, not a restart loop
   }
   const stop = (signal) => {
     log.info('shutting down', { signal });

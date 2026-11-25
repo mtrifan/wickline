@@ -133,9 +133,11 @@ Wickline sends push notifications through [Gotify](https://gotify.net), a self-h
 
 1. In Gotify, create an **application** (Apps → Create application) named Wickline, and copy its token.
 2. Set `GOTIFY_URL` and `GOTIFY_TOKEN`, and `PUBLIC_URL` so that tapping a notification opens Wickline.
-3. Send a test: `docker exec wickline node selfhost/cli.mjs notify-test`. It prints the exact error if delivery fails (for example "Gotify answered 401 (Unauthorized: …)" for a wrong token). While signed in, `/api/selfhost/notify/status` shows whether a provider is configured and how the last delivery went.
+3. Send a test: `docker exec wickline node selfhost/cli.mjs notify-test`. It prints the exact error if delivery fails (for example "Gotify answered 401 (Unauthorized: …)" for a wrong token). While signed in, `/api/selfhost/notify/status` shows whether a provider is configured and how the last queued notification went (test messages are not counted there).
 
-Notifications are queued in the database and retried with increasing delays (5 s up to 30 min) when Gotify is down, so none are lost across restarts. Delivery is at-least-once: if the container stops in the instant between Gotify accepting a message and Wickline recording it, that one message can arrive twice.
+Notifications are queued in the database and survive restarts. When Gotify is unreachable or answers with a server error, they are retried with increasing delays (5 s up to 30 min) for up to `NOTIFY_MAX_ATTEMPTS` attempts. After that, or straight away when Gotify refuses a message (a wrong token, a redirect), the notification is dropped and the error is logged and shown in the status. Delivery is at-least-once: if the container stops in the instant between Gotify accepting a message and Wickline recording it, that one message can arrive twice.
+
+Run only one container on a data folder: a second one refuses to start while the first is running.
 
 Price alerts start sending notifications when server-side alerts arrive (Phase 3). For now you can set up and test the connection.
 

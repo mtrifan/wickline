@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { hostname } from 'node:os';
 import { backupTo, loadMigrations } from './db.mjs';
 import { counterAt } from '../auth/totp.mjs';
 
@@ -63,10 +64,22 @@ const LOCK = 'server.lock';
 /** A lock refreshed more recently than this belongs to a running server. */
 export const LOCK_STALE_MS = 90_000;
 
-/** Marks the data directory as in use; the lock is refreshed every 30 s and removed on stop. */
-export function holdServerLock(dataDir) {
+export class DataDirInUseError extends Error {}
+
+/**
+ * Marks the data directory as in use; the lock is refreshed every 30 s and removed on stop.
+ * Refuses when another container holds a fresh lock (two servers on one database would corrupt
+ * it and send every notification twice). The same container restarting after a crash is allowed:
+ * the lock records the host name, which stays the same across restarts of one container.
+ */
+export function holdServerLock(dataDir, { host = hostname() } = {}) {
   const file = path.join(dataDir, LOCK);
-  writeFileSync(file, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+  const other = activeServerLock(dataDir);
+  if (other && other.host && other.host !== host) {
+    throw new DataDirInUseError(`Another Wickline Self-Hosted (host ${other.host}) is using ${dataDir}. Stop it first: two servers must never share one data directory.`);
+  }
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(file, JSON.stringify({ pid: process.pid, host, startedAt: new Date().toISOString() }));
   const timer = setInterval(() => { try { const t = new Date(); utimesSync(file, t, t); } catch { /* removed */ } }, 30_000);
   timer.unref();
   return { release() { clearInterval(timer); rmSync(file, { force: true }); } };
