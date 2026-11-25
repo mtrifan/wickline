@@ -6,6 +6,8 @@
 //   node selfhost/cli.mjs token create <label>     creates an API token (shown once)   [needs DATA_DIR]
 //   node selfhost/cli.mjs token list | token revoke <id>                             [needs DATA_DIR]
 //   node selfhost/cli.mjs sessions revoke-all      signs out every browser            [needs DATA_DIR]
+//   node selfhost/cli.mjs backup                   writes a backup to DATA_DIR/backups now
+//   node selfhost/cli.mjs restore <file> [--force] replaces the database with a backup  [server stopped]
 //
 // In Docker: docker exec -it wickline node selfhost/cli.mjs <command>
 
@@ -59,10 +61,26 @@ try {
     await withStore((s) => { for (const t of s.listTokens()) process.stdout.write(`${t.id}  ${t.label}  created ${new Date(t.created_at).toISOString()}  last used ${t.last_used_at ? new Date(t.last_used_at).toISOString() : 'never'}\n`); });
   } else if (cmd === 'token' && sub === 'revoke' && rest[0]) {
     await withStore((s) => process.stdout.write(s.deleteToken(rest[0]) ? 'revoked\n' : 'no such token\n'));
+  } else if (cmd === 'backup') {
+    const { openDatabase } = await import('./storage/db.mjs');
+    const { runBackup } = await import('./storage/backup.mjs');
+    const dataDir = path.resolve(process.env.DATA_DIR || '/data');
+    const { db } = openDatabase(dataDir);
+    try {
+      const keep = Number(process.env.BACKUP_KEEP) || 14;
+      process.stdout.write(`backup written: ${runBackup(db, dataDir, { keep })}\n`);
+    } finally { db.close(); }
+  } else if (cmd === 'restore' && sub) {
+    const { restoreDatabase } = await import('./storage/backup.mjs');
+    const dataDir = path.resolve(process.env.DATA_DIR || '/data');
+    const r = restoreDatabase(dataDir, sub, { force: rest.includes('--force') });
+    process.stdout.write(`restored ${sub} (schema ${r.version})\n`);
+    if (r.saved) process.stdout.write(`the previous database was saved as ${r.saved}\n`);
+    process.stdout.write('Start the container. Open browsers reload into the restored data.\n');
   } else if (cmd === 'sessions' && sub === 'revoke-all') {
     await withStore((s) => { s.deleteAllSessions(); s.audit('sessions.revoke-all', { detail: 'cli' }); process.stdout.write('all sessions revoked\n'); });
   } else {
-    process.stderr.write('usage: node selfhost/cli.mjs hash-password | totp-setup [label] | token create <label> | token list | token revoke <id> | sessions revoke-all\n');
+    process.stderr.write('usage: node selfhost/cli.mjs hash-password | totp-setup [label] | token create <label> | token list | token revoke <id> | sessions revoke-all | backup | restore <file> [--force]\n');
     process.exit(2);
   }
 } catch (e) {
