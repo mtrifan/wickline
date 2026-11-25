@@ -38,7 +38,11 @@ export function injectBoot(html, payload) {
   return html.slice(0, end) + tags + html.slice(end);
 }
 
-/** True for the paths upstream answers with index.html ("/", "/index.html", "/%69ndex.html", "/./index.html"). */
+/**
+ * True for the paths upstream answers with index.html: "/" and anything that normalizes to
+ * /index.html within the public root ("/%69ndex.html", "/./index.html", "/x/../index.html").
+ * Paths escaping the root are left to upstream, which refuses them.
+ */
 export function isIndexPath(pathname) {
   if (pathname === '/') return true;
   let p;
@@ -46,8 +50,7 @@ export function isIndexPath(pathname) {
   const parts = [];
   for (const seg of p.split('/')) {
     if (seg === '' || seg === '.') continue;
-    if (seg === '..') return false; // upstream refuses traversal (403); leave it to upstream
-    parts.push(seg);
+    if (seg === '..') { if (!parts.length) return false; parts.pop(); } else parts.push(seg);
   }
-  return parts.length === 0 || (parts.length === 1 && parts[0] === 'index.html');
+  return parts.length === 1 && parts[0] === 'index.html';
 }

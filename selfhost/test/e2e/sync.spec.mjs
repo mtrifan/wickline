@@ -159,10 +159,12 @@ test('first run on a profile with older data: the server wins, the old data can 
   const page = await ctx.newPage();
   await page.goto(`${BASE}/selfhost/login`);
   // same origin, before any sync agent ran: this profile's data predates the self-hosted edition
-  await page.evaluate(() => {
+  const fresh = `drawings.FIRST${Date.now()}`; // a compare-and-swap key the server lacks
+  await page.evaluate((k) => {
     localStorage.setItem('wickline.screener', JSON.stringify({ local: true }));
     localStorage.setItem('wickline.paperQty', '42');
-  });
+    localStorage.setItem(`wickline.${k}`, '[]');
+  }, fresh);
   await page.getByLabel('Password').fill(PASSWORD);
   await page.getByRole('button', { name: 'Sign in' }).click();
   await expect(page).toHaveTitle(/Wickline$/);
@@ -174,6 +176,13 @@ test('first run on a profile with older data: the server wins, the old data can 
   expect(saved.keys.screener).toBe(JSON.stringify({ local: true }));
   await waitLeader(page);
   await expect.poll(async () => (await serverState(page)).keys.paperQty?.v, { timeout: 5_000 }).toBe('42');
+  await expect.poll(async () => (await serverState(page)).keys[fresh]?.v, { timeout: 5_000 }).toBe('[]');
+  await settled(page);
+  // editing an uploaded key again is accepted, not refused as a conflict
+  const drawn = JSON.stringify([{ type: 'hline', p1: { t: 1, v: 2 } }]);
+  await setItem(page, `wickline.${fresh}`, drawn);
+  await expect.poll(async () => (await serverState(page)).keys[fresh]?.v, { timeout: 5_000 }).toBe(drawn);
+  expect(await getItem(page, `wickline.${fresh}`)).toBe(drawn);
   await ctx.close(); await a.ctx.close();
 });
 

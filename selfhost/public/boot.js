@@ -97,6 +97,7 @@
   // --- 1. hydration ---------------------------------------------------------------------------
 
   let previousData = null; // local values the server's data replaced (first run, restore, import)
+  const uploadedAtBoot = new Map(); // first run: local keys the server lacks, uploaded as this page's own
 
   if (get(`${NS}epoch`) !== epoch) {
     const firstRun = get(`${NS}epoch`) === null;
@@ -113,6 +114,7 @@
         if (local !== null && (remote.deleted ? null : remote.v) !== local) replaced[name] = local;
       } else if (firstRun) {
         markDirty(name, 0); // the server has never had it: upload this browser's copy
+        uploadedAtBoot.set(name, local);
       } else {
         replaced[name] = local;
         del(full); // a restore or import: this browser mirrors the server's data exactly
@@ -136,7 +138,8 @@
   const applied = new Map();
   for (const k of allKeys()) if (k.startsWith(`${NS}v.`)) applied.set(k.slice(NS.length + 2), Number(get(k)) || 0);
   const appliedOf = (name) => applied.get(name) ?? 0;
-  const lastWritten = new Map(); // name -> the value this page last wrote
+  // name -> the value this page last wrote. A first-run upload counts: the app runs with that value.
+  const lastWritten = new Map(uploadedAtBoot);
 
   /** A version change seen by this page: adopt it only if the page's app state matches it. */
   function acknowledge(name) {
@@ -249,15 +252,17 @@
       online = true; retryDelay = 2000; publishStatus();
       const now = get(full);
       const merged = 'value' in data && data.value !== value;
-      setVer(name, data.version);
       if (now === value) {
+        // The value lands before its version, so another tab never acknowledges a version early.
         if (merged) { writeLocal(name, data.value); dispatchStorage(name, value, data.value); }
+        setVer(name, data.version);
         clearDirty(name);
         acknowledge(name);
         const d = deferred.get(name);
         deferred.delete(name);
         if (d && d.ver > data.version) onRemote(d);
       } else {
+        setVer(name, data.version);
         // Changed again while in flight: send the newer value next. After a merge, keep the original
         // base so the server merges again; basing it on the merged version would drop the entries
         // the merge brought in from the other device.
@@ -267,13 +272,15 @@
     } else if (res.status === 409 && data.error === 'conflict') {
       const old = get(full);
       const next = data.deleted ? null : data.value;
+      const later = deferred.get(name);
+      deferred.delete(name);
       writeLocal(name, next);
       setVer(name, data.version);
       clearDirty(name);
       if (live.has(name)) dispatchStorage(name, old, next);
       acknowledge(name); // a live key now shows the server's value; any other key stays stale until reload
-      deferred.delete(name); // the server's current value supersedes it
       notify('replaced', name);
+      if (later && later.ver > data.version) onRemote(later); // broadcast before this response arrived
     } else if (res.status === 409 && data.error === 'epoch') {
       notify('restored');
     } else if (res.status >= 400 && res.status < 500 && ![403, 408, 429].includes(res.status)) {
