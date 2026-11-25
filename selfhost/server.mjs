@@ -24,6 +24,9 @@ import { createSyncState } from './sync/state.mjs';
 import { createEventHub } from './sync/events.mjs';
 import { createSyncRoutes } from './sync/routes.mjs';
 import { createAdminRoutes } from './http/admin.mjs';
+import { createNotifyRoutes } from './http/notify.mjs';
+import { createGotify } from './notify/gotify.mjs';
+import { createOutbox } from './notify/outbox.mjs';
 import { holdServerLock, startBackupScheduler, sweepTemporaryFiles } from './storage/backup.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -64,6 +67,10 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   const bootJs = readFileSync(path.join(ROOT, 'selfhost/public/boot.js'));
   const keyConfig = clientKeyConfig({ syncWorkspace: cfg.syncWorkspace });
   const handleAdmin = createAdminRoutes({ state: sync, db, dataDir: cfg.dataDir, version: VERSION, log });
+  const providers = [createGotify({ url: cfg.gotifyUrl, token: cfg.gotifyToken, priority: cfg.gotifyPriority })];
+  const outbox = createOutbox(db, { providers, maxAttempts: cfg.notifyMaxAttempts, log });
+  outbox.start(); // delivers anything queued before a restart
+  const handleNotify = createNotifyRoutes({ outbox, publicUrl: cfg.publicUrl });
   const hub = createEventHub(sync);
   const handleSync = createSyncRoutes({
     state: sync,
@@ -196,6 +203,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     }
     if (url.pathname.startsWith('/api/selfhost/') && (await handleSync(req, res, url, auth)) !== false) return undefined;
     if (url.pathname.startsWith('/api/selfhost/') && (await handleAdmin(req, res, url)) !== false) return undefined;
+    if (url.pathname.startsWith('/api/selfhost/notify/') && (await handleNotify(req, res, url)) !== false) return undefined;
     if (url.pathname.startsWith('/api/selfhost/') || url.pathname.startsWith('/selfhost/')) return sendJson(res, 404, { error: 'Not found' });
 
     // Upstream's app and API (GET only upstream; it answers 405 to anything else).
@@ -229,6 +237,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
       const done = new Promise((r) => server.close(() => r()));
       hub.close();
       backups.stop();
+      outbox.stop();
       // Long-lived streams (SSE) never end on their own.
       server.closeIdleConnections();
       setTimeout(() => server.closeAllConnections(), 1000).unref();
@@ -242,7 +251,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     return closing;
   }
 
-  return { server, port, close, state, db, store, sync, hub };
+  return { server, port, close, state, db, store, sync, hub, outbox };
 }
 
 // ---------------------------------------------------------------------------------------------
