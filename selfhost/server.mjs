@@ -27,6 +27,7 @@ import { createAdminRoutes } from './http/admin.mjs';
 import { createNotifyRoutes } from './http/notify.mjs';
 import { createGotify } from './notify/gotify.mjs';
 import { createOutbox } from './notify/outbox.mjs';
+import { createAlertLedger } from './alerts/ledger.mjs';
 import { holdServerLock, startBackupScheduler, sweepTemporaryFiles, DataDirInUseError } from './storage/backup.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -71,6 +72,9 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   const providers = [createGotify({ url: cfg.gotifyUrl, token: cfg.gotifyToken, priority: cfg.gotifyPriority })];
   const outbox = createOutbox(db, { providers, maxAttempts: cfg.notifyMaxAttempts, log });
   outbox.start(); // delivers anything queued before a restart
+  // The alerts merge and trigger records: a browser trigger is pushed once, from here (PLAN §2.5.6).
+  const alerts = createAlertLedger(db, { outbox, publicUrl: cfg.publicUrl, log });
+  alerts.attach(sync);
   const handleNotify = createNotifyRoutes({ outbox, publicUrl: cfg.publicUrl });
   const hub = createEventHub(sync);
   const handleSync = createSyncRoutes({
@@ -252,7 +256,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     return closing;
   }
 
-  return { server, port, close, state, db, store, sync, hub, outbox };
+  return { server, port, close, state, db, store, sync, hub, outbox, alerts };
   } catch (e) {
     lock.release();
     throw e;
