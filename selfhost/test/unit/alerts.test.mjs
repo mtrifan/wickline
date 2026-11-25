@@ -61,15 +61,21 @@ test('other changes to the trigger fields are ignored', () => {
 });
 
 test('the dual window collapses a stale trigger of a crossing already recorded and since re-armed', () => {
-  const lastTriggerAt = () => 1000;
-  // The server fired at 1000, another device re-armed; a stale browser reports the same crossing.
-  const same = mergeAlerts({ base: [armed('a')], ours: [armed('a')], theirs: [fired('a', 1000 + DUAL_WINDOW_MS)], lastTriggerAt });
+  // The server fired at 1000 (recorded in version 2), another device re-armed (version 3).
+  const lastTrigger = () => ({ at: 1000, version: 2 });
+  const opts = { base: [armed('a')], ours: [armed('a')], lastTrigger };
+  // A stale browser (base 1, before the trigger) reports the same crossing.
+  const same = mergeAlerts({ ...opts, baseVersion: 1, theirs: [fired('a', 1000 + DUAL_WINDOW_MS)] });
   assert.deepEqual(same.merged, [armed('a')]);
   assert.deepEqual(same.triggers, []);
-  const later = mergeAlerts({ base: [armed('a')], ours: [armed('a')], theirs: [fired('a', 1001 + DUAL_WINDOW_MS)], lastTriggerAt });
+  const later = mergeAlerts({ ...opts, baseVersion: 1, theirs: [fired('a', 1001 + DUAL_WINDOW_MS)] });
   assert.deepEqual(ids(later.triggers), ['a'], 'outside the window it is a new crossing');
+  // A browser that saw the trigger and the re-arm (base 3): a crossing 60 s later is a new one.
+  const fresh = mergeAlerts({ ...opts, baseVersion: 3, theirs: [fired('a', 61_000)] });
+  assert.deepEqual(ids(fresh.triggers), ['a']);
+  assert.equal(fresh.merged[0].triggeredAt, 61_000);
   // The client had seen that trigger and re-armed itself: its new trigger is real even inside the window.
-  const own = mergeAlerts({ base: [fired('a', 1000)], ours: [fired('a', 1000)], theirs: [fired('a', 1500)], lastTriggerAt });
+  const own = mergeAlerts({ base: [fired('a', 1000)], ours: [fired('a', 1000)], theirs: [fired('a', 1500)], baseVersion: 2, lastTrigger });
   assert.deepEqual(ids(own.triggers), ['a']);
 });
 
@@ -86,10 +92,11 @@ test('deletions: tombstoned ids stay deleted; ids added elsewhere stay', () => {
   assert.deepEqual(ids(t.merged), ['a'], 'a tombstoned id is not brought back');
 });
 
-test('new alerts keep their place at the front; triggers on new entries are never pushed', () => {
-  const r = mergeAlerts({ base: [armed('a')], ours: [armed('a'), armed('b')], theirs: [fired('n', 1000), armed('a')] });
-  assert.deepEqual(ids(r.merged), ['n', 'a', 'b']);
-  assert.deepEqual(r.triggers, [], 'a trigger the server never saw armed (an upload) is not pushed');
+test('new alerts keep their place at the front; only a recent trigger on a new entry is pushed', () => {
+  const now = 10_000_000;
+  const r = mergeAlerts({ base: [armed('a')], ours: [armed('a'), armed('b')], theirs: [fired('n', now - 60_000), fired('o', 1000), armed('a')], now });
+  assert.deepEqual(ids(r.merged), ['n', 'o', 'a', 'b']);
+  assert.deepEqual(ids(r.triggers), ['n'], 'fired offline a minute ago is news; fired hours ago (an old upload) is not');
 });
 
 test('the notification mirrors upstream\'s toast and links to the chart', () => {
@@ -188,6 +195,44 @@ test('deleting the whole key tombstones every alert in it; an import clears tomb
   assert.equal(s.ledger.isTombstoned('a'), true);
   s.sync.replaceAll({ alerts: JSON.stringify([armed('a')]) });
   assert.equal(s.ledger.isTombstoned('a'), false);
+});
+
+test('a real second crossing after a re-arm is pushed, even within the dual window', () => {
+  const s = setup();
+  s.write([armed('a')], 0);
+  s.write([fired('a', 100_000)], 1); // v2
+  s.write([armed('a', { triggeredAt: null, triggerPrice: null })], 2); // re-armed, v3
+  const r = s.write([fired('a', 160_000, 192)], 3);
+  assert.equal(r.value, undefined, 'stored as sent');
+  assert.deepEqual(s.current(), [fired('a', 160_000, 192)]);
+  assert.deepEqual(s.rows().map((x) => x.dedup_key), ['alert:a:100000', 'alert:a:160000']);
+  // A stale browser (base 1) reporting the first crossing again still collapses.
+  s.write([armed('a', { triggeredAt: null, triggerPrice: null })], 4); // v5
+  s.write([fired('a', 100_030)], 1);
+  assert.equal(s.rows().length, 2);
+});
+
+test('after an import, a device on version 1 still merges instead of getting a conflict', () => {
+  const s = setup();
+  s.sync.replaceAll({ alerts: JSON.stringify([armed('a')]) });
+  s.write([armed('b'), armed('a')], 1); // device 1 adds b: v2
+  const r = s.write([armed('c'), armed('a')], 1); // device 2, still on v1, adds c
+  assert.deepEqual(ids(JSON.parse(r.value)), ['c', 'b', 'a']);
+});
+
+test('the push is queued even if waking the outbox fails after the commit', () => {
+  const s = setup();
+  s.write([armed('a')], 0);
+  const changes = s.changes.length;
+  const hook = s.ledger.syncHook;
+  const orig = hook.afterCommit;
+  hook.afterCommit = () => { throw new Error('boom'); };
+  try {
+    const r = s.write([fired('a', 2000)], 1);
+    assert.equal(r.changed, true);
+  } finally { hook.afterCommit = orig; }
+  assert.equal(s.changes.length, changes + 1, 'still broadcast');
+  assert.equal(s.rows().length, 1);
 });
 
 test('a refused write records no trigger and queues nothing', () => {

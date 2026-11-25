@@ -122,14 +122,11 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
 
   /** Runs fn in a transaction, telling the key's hook whether it committed. */
   function hooked(hook, fn) {
-    try {
-      const r = transaction(db, fn);
-      hook?.afterCommit?.();
-      return r;
-    } catch (e) {
-      hook?.rollback?.();
-      throw e;
-    }
+    let r;
+    try { r = transaction(db, fn); } catch (e) { hook?.rollback?.(); throw e; }
+    // Committed: whatever happens after this never turns the write into a failure.
+    try { hook?.afterCommit?.(); } catch (e) { log?.error('sync hook failed after commit', { error: e }); }
+    return r;
   }
 
   function broadcast(change) {
@@ -181,7 +178,7 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
           // The hook's rules depend on knowing the client's base: without it, re-hydrate instead.
           const base = baseValue(key, baseVersion, curVer, cur);
           if (base === undefined) throw conflict();
-          const m = hook.merge({ cur, value, base });
+          const m = hook.merge({ cur, value, base, baseVersion, nextVersion: curVer + 1 });
           if (m !== null) stored = m;
           else if (baseVersion !== curVer) stored = mergedValue(key, cur, value, baseVersion);
         } else stored = mergedValue(key, cur, value, baseVersion);
@@ -211,8 +208,9 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
   }
 
   /**
-   * A server-side change to a synced key (a trigger the server detected). `fn(current)` runs inside
-   * the transaction and returns the new value, or undefined to leave the key alone. Not subject to
+   * A server-side change to a synced key (a trigger the server detected). `fn(current, { version })`
+   * runs inside the transaction (`version` is the one a change would get) and returns the new value,
+   * or undefined to leave the key alone. Not subject to
    * the client quota. Returns { changed, version?, rev? }.
    */
   function mutate(key, fn, { by = 'server', hook } = {}) {
@@ -221,7 +219,7 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
     const result = hooked(hook, () => {
       const row = q.row.get(key);
       const cur = !row || row.deleted === 1 ? null : row.value;
-      const next = fn(cur);
+      const next = fn(cur, { version: (row ? row.version : 0) + 1 });
       if (next === undefined || next === cur) return { changed: false };
       if (typeof next !== 'string' && next !== null) throw new TypeError('mutate: the new value must be a string or null');
       if (!row) pruneTombstones(Number(q.usage.get(excluded).rows), 1);
@@ -272,7 +270,11 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
       for (const h of hooks.values()) h.onReplace?.();
       q.setMeta.run('pruned_rev', String(rev()));
       const at = now();
-      for (const [k, v] of accepted) q.upsert.run(k, v, v.length, 0, 1, q.nextRev.get().rev, at, 'import');
+      for (const [k, v] of accepted) {
+        q.upsert.run(k, v, v.length, 0, 1, q.nextRev.get().rev, at, 'import');
+        // A device that adopts the import writes on top of version 1: keep it as a merge base.
+        if (policyFor(k, opts) === 'merge') q.addHistory.run(k, 1, v, v.length, at);
+      }
       q.setMeta.run('epoch', e); // with the data: never imported data under the old epoch
     });
     notifyEpoch(e);

@@ -6,7 +6,7 @@
 // so the same trigger reported again (a retried request, a second browser) is pushed once.
 
 import { parseIdArray } from '../sync/merge.mjs';
-import { mergeAlerts, triggerTime, DUAL_WINDOW_MS } from './merge.mjs';
+import { mergeAlerts, triggerTime, DUAL_WINDOW_MS, RECENT_MS } from './merge.mjs';
 
 export const TOMBSTONE_MS = 30 * 86_400_000;
 
@@ -25,15 +25,15 @@ export function alertPayload(a, publicUrl) {
 
 export const triggerKey = (id, at) => `${id}:${at}`;
 
-export function createAlertLedger(db, { outbox, publicUrl = null, now = Date.now, dualWindowMs = DUAL_WINDOW_MS, log } = {}) {
+export function createAlertLedger(db, { outbox, publicUrl = null, now = Date.now, dualWindowMs = DUAL_WINDOW_MS, recentMs = RECENT_MS, log } = {}) {
   const q = {
-    get: db.prepare('SELECT last_trigger_key, tombstoned_at FROM alert_meta WHERE alert_id = ?'),
-    setTrigger: db.prepare(`INSERT INTO alert_meta (alert_id, last_trigger_key) VALUES (?, ?)
-      ON CONFLICT (alert_id) DO UPDATE SET last_trigger_key = excluded.last_trigger_key`),
+    get: db.prepare('SELECT last_trigger_key, trigger_version, tombstoned_at FROM alert_meta WHERE alert_id = ?'),
+    setTrigger: db.prepare(`INSERT INTO alert_meta (alert_id, last_trigger_key, trigger_version) VALUES (?, ?, ?)
+      ON CONFLICT (alert_id) DO UPDATE SET last_trigger_key = excluded.last_trigger_key, trigger_version = excluded.trigger_version`),
     tombstone: db.prepare(`INSERT INTO alert_meta (alert_id, status, tombstoned_at) VALUES (?, 'deleted', ?)
       ON CONFLICT (alert_id) DO UPDATE SET status = 'deleted', tombstoned_at = excluded.tombstoned_at`),
     purge: db.prepare('DELETE FROM alert_meta WHERE tombstoned_at IS NOT NULL AND tombstoned_at < ?'),
-    clearTombstones: db.prepare("UPDATE alert_meta SET status = NULL, tombstoned_at = NULL WHERE tombstoned_at IS NOT NULL"),
+    clearTombstones: db.prepare('DELETE FROM alert_meta WHERE tombstoned_at IS NOT NULL'),
   };
   let queued = false; // a notification was queued in the transaction in progress
   let state = null;
@@ -42,17 +42,20 @@ export function createAlertLedger(db, { outbox, publicUrl = null, now = Date.now
     const r = q.get.get(id);
     return !!r && r.tombstoned_at != null && r.tombstoned_at >= now() - TOMBSTONE_MS;
   };
-  const lastTriggerAt = (id) => {
-    const k = q.get.get(id)?.last_trigger_key;
+  /** { at, version } of the last recorded trigger, or null. */
+  const lastTrigger = (id) => {
+    const r = q.get.get(id);
+    const k = r?.last_trigger_key;
     if (!k) return null;
-    const t = Number(k.slice(k.lastIndexOf(':') + 1));
-    return Number.isFinite(t) ? t : null;
+    const at = Number(k.slice(k.lastIndexOf(':') + 1));
+    return Number.isFinite(at) ? { at, version: r.trigger_version ?? null } : null;
   };
+  const lastTriggerAt = (id) => lastTrigger(id)?.at ?? null;
 
-  /** Records a trigger and queues its push. Runs inside the caller's transaction. */
-  function record(alert, source) {
+  /** Records a trigger (in the alerts value's `version`) and queues its push, in the caller's transaction. */
+  function record(alert, source, version) {
     const key = triggerKey(alert.id, alert.triggeredAt);
-    q.setTrigger.run(alert.id, key);
+    q.setTrigger.run(alert.id, key, version);
     const n = outbox ? outbox.insert(`alert:${key}`, alertPayload(alert, publicUrl)) : 0;
     if (n) queued = true;
     log?.info('alert triggered', { id: alert.id, symbol: alert.symbol, source, queued: n });
@@ -66,13 +69,13 @@ export function createAlertLedger(db, { outbox, publicUrl = null, now = Date.now
   /** The sync hook for the `alerts` key (see state.useHook). All of it runs in the write's transaction. */
   const syncHook = {
     /** Returns the value to store, or null when a side is not an alerts array (last write wins). */
-    merge({ cur, value, base }) {
+    merge({ cur, value, base, baseVersion, nextVersion }) {
       const ours = parseIdArray(cur); const theirs = parseIdArray(value); const b = parseIdArray(base);
       if (!ours || !theirs || !b) return null;
       q.purge.run(now() - TOMBSTONE_MS);
-      const r = mergeAlerts({ base: b, ours, theirs, isTombstoned, lastTriggerAt, dualWindowMs });
+      const r = mergeAlerts({ base: b, ours, theirs, baseVersion, isTombstoned, lastTrigger, now: now(), dualWindowMs, recentMs });
       tombstone(r.removed);
-      for (const a of r.triggers) record(a, 'browser');
+      for (const a of r.triggers) record(a, 'browser', nextVersion);
       const out = JSON.stringify(r.merged);
       return out === JSON.stringify(theirs) ? value : out; // keep the client's exact text when nothing changed
     },
@@ -98,12 +101,12 @@ export function createAlertLedger(db, { outbox, publicUrl = null, now = Date.now
   function trigger({ id, triggerPrice, triggeredAt = now() }) {
     if (!state) throw new Error('createAlertLedger: attach(state) first');
     let fired = null;
-    state.mutate('alerts', (cur) => {
+    state.mutate('alerts', (cur, { version }) => {
       const items = parseIdArray(cur);
       const a = items?.find((x) => x.id === id);
       if (!a || triggerTime(a) !== null || a.active !== true) return undefined;
       Object.assign(a, { active: false, triggeredAt, triggerPrice });
-      record(a, 'server');
+      record(a, 'server', version);
       fired = triggerKey(id, triggeredAt);
       return JSON.stringify(items);
     }, { by: 'server', hook: syncHook });
@@ -116,5 +119,5 @@ export function createAlertLedger(db, { outbox, publicUrl = null, now = Date.now
     s.useHook('alerts', syncHook);
   }
 
-  return { attach, trigger, isTombstoned, lastTriggerAt, syncHook };
+  return { attach, trigger, isTombstoned, lastTrigger, lastTriggerAt, syncHook };
 }
