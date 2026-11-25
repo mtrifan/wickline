@@ -1,7 +1,7 @@
 // Contract: frontend behaviour the boot.js sync agent and the server adapters rely on.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { importUpstream, readUpstream, memoryStorage, point } from './helpers.mjs';
+import { importUpstream, readUpstream, upstreamPath, memoryStorage, point } from './helpers.mjs';
 
 test('index.html: one <head> anchor, inline theme script, module entry js/app.js', () => {
   const html = readUpstream('public/index.html');
@@ -66,4 +66,20 @@ test('PaperAccount exposes the engine API', async () => {
   for (const m of ['placeOrder', 'cancelOrder', 'closePosition', 'tick', 'bar', 'toJSON']) {
     assert.equal(typeof PaperAccount.prototype[m], 'function', `${point('paper-engine')} ${m}`);
   }
+});
+
+test('the keys boot.js applies live are exactly the keys upstream has storage listeners for', async () => {
+  const { readdirSync } = await import('node:fs');
+  const { clientKeyConfig } = await import('../../sync/key-policy.mjs');
+  const listened = new Set();
+  for (const f of readdirSync(upstreamPath('public/js')).filter((n) => n.endsWith('.js'))) {
+    const src = readUpstream(`public/js/${f}`);
+    const constKey = /const KEY = '(wickline\.[\w.]+)'/.exec(src)?.[1];
+    // each listener compares e.key with a literal key or the file's KEY constant
+    for (const m of src.matchAll(/addEventListener\('storage',[\s\S]{0,200}?e\.key\s*[!=]==\s*('wickline\.([\w.]+)'|KEY\b)/g)) {
+      listened.add(m[2] ?? constKey?.slice('wickline.'.length));
+    }
+  }
+  assert.deepEqual([...listened].sort(), [...clientKeyConfig().live].sort(),
+    `${point('storage-listeners')} update clientKeyConfig().live: keys in the list apply live, others wait for a reload`);
 });

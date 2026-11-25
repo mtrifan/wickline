@@ -60,7 +60,8 @@
   const verOf = (name) => Number(get(`${NS}v.${name}`)) || 0;
   const setVer = (name, v) => trySet(`${NS}v.${name}`, String(v));
   const dirtyBase = (name) => { const d = get(`${NS}dirty.${name}`); return d === null ? null : (Number(d) || 0); };
-  const markDirty = (name) => { if (dirtyBase(name) === null) trySet(`${NS}dirty.${name}`, String(verOf(name))); };
+  /** Marks a key dirty unless it already is: the first (oldest) base wins, so no stale write slips through. */
+  const markDirty = (name, base) => { if (dirtyBase(name) === null) trySet(`${NS}dirty.${name}`, String(base)); };
   const setDirty = (name, base) => trySet(`${NS}dirty.${name}`, String(base));
   const clearDirty = (name) => del(`${NS}dirty.${name}`);
   const dirtyNames = () => allKeys().filter((k) => k.startsWith(`${NS}dirty.`)).map((k) => k.slice(NS.length + 6));
@@ -95,7 +96,7 @@
 
   // --- 1. hydration ---------------------------------------------------------------------------
 
-  let previousData = null; // first run on this profile: local values the server's data replaced
+  let previousData = null; // local values the server's data replaced (first run, restore, import)
 
   if (get(`${NS}epoch`) !== epoch) {
     const firstRun = get(`${NS}epoch`) === null;
@@ -111,13 +112,14 @@
       if (remote) {
         if (local !== null && (remote.deleted ? null : remote.v) !== local) replaced[name] = local;
       } else if (firstRun) {
-        markDirty(name); // the server has never had it: upload this browser's copy
+        markDirty(name, 0); // the server has never had it: upload this browser's copy
       } else {
+        replaced[name] = local;
         del(full); // a restore or import: this browser mirrors the server's data exactly
       }
     }
     for (const [name, r] of Object.entries(snap.keys)) { writeLocal(name, r.deleted ? null : r.v); setVer(name, r.ver); }
-    if (firstRun && Object.keys(replaced).length) previousData = replaced;
+    if (Object.keys(replaced).length) previousData = replaced;
     trySet(`${NS}epoch`, epoch);
   } else {
     for (const [name, r] of Object.entries(snap.keys)) {
@@ -127,6 +129,24 @@
   }
   advance(snap.rev);
 
+  // What this page's running app shows. Versions in localStorage are shared by every tab of the
+  // profile and say what localStorage holds; a page's own state can be older (a held-back remote
+  // change, a conflict on a key upstream does not reload, another tab hydrating). A write is
+  // based on the page's version, so a stale page can never overwrite a newer server value.
+  const applied = new Map();
+  for (const k of allKeys()) if (k.startsWith(`${NS}v.`)) applied.set(k.slice(NS.length + 2), Number(get(k)) || 0);
+  const appliedOf = (name) => applied.get(name) ?? 0;
+  const lastWritten = new Map(); // name -> the value this page last wrote
+
+  /** A version change seen by this page: adopt it only if the page's app state matches it. */
+  function acknowledge(name) {
+    const v = verOf(name);
+    if (v <= appliedOf(name)) return;
+    // Live keys: upstream applied the value from its storage event. Others: only this page's own
+    // write, still what localStorage holds, was what the server accepted at that version.
+    if (live.has(name) || (lastWritten.has(name) && lastWritten.get(name) === get(PREFIX + name))) applied.set(name, v);
+  }
+
   // --- 2. write capture -----------------------------------------------------------------------
 
   proto.setItem = function setItem(key, value) {
@@ -135,8 +155,13 @@
     if (!isSynced(name)) return rawSet.call(this, key, value);
     const s = String(value);
     const prev = rawGet.call(this, key);
+    if (prev === s) return rawSet.call(this, key, s); // no-op suppression: upstream rewrites some keys on every boot
+    // The marker goes first: another tab must never see the new value as clean. A marker left by a
+    // failed write is harmless (the current value uploads as a no-op).
+    markDirty(name, appliedOf(name));
     rawSet.call(this, key, s); // a quota error propagates exactly as it would without us
-    if (prev !== s) changed(name); // no-op suppression: upstream rewrites some keys on every boot
+    lastWritten.set(name, s);
+    changed(name);
     return undefined;
   };
   proto.removeItem = function removeItem(key) {
@@ -144,13 +169,15 @@
     const name = nameOf(String(key));
     if (!isSynced(name)) return rawRemove.call(this, key);
     const prev = rawGet.call(this, key);
+    if (prev === null) return rawRemove.call(this, key);
+    markDirty(name, appliedOf(name));
     rawRemove.call(this, key);
-    if (prev !== null) changed(name);
+    lastWritten.set(name, null);
+    changed(name);
     return undefined;
   };
 
   function changed(name) {
-    markDirty(name);
     schedule(name);
     render();
   }
@@ -162,6 +189,9 @@
   const timers = new Map();
   const inflight = new Set();
   const again = new Set();
+  // Remote changes that arrived while the key had a local change pending. The upload's response can
+  // arrive after the broadcast of a later change (separate connections), so it is replayed then.
+  const deferred = new Map();
   let retryTimer = null;
   let retryDelay = 2000;
 
@@ -183,6 +213,9 @@
     retryDelay = Math.min(retryDelay * 2, 60_000);
   }
 
+  /** The keepalive budget is in bytes; UTF-8 can take three per character. */
+  const fitsKeepalive = (s) => s.length * 3 <= KEEPALIVE_MAX || new TextEncoder().encode(s).length <= KEEPALIVE_MAX;
+
   async function upload(name, { keepalive = false } = {}) {
     if (!leader) return;
     if (inflight.has(name)) { again.add(name); return; }
@@ -202,7 +235,7 @@
         headers: { 'Content-Type': 'application/json', 'X-Wickline-Selfhost': '1' },
         body,
         credentials: 'same-origin',
-        keepalive: keepalive && body.length <= KEEPALIVE_MAX,
+        keepalive: keepalive && fitsKeepalive(body),
       });
       try { data = await res.json(); } catch { /* empty or not JSON */ }
     } catch {
@@ -220,11 +253,15 @@
       if (now === value) {
         if (merged) { writeLocal(name, data.value); dispatchStorage(name, value, data.value); }
         clearDirty(name);
+        acknowledge(name);
+        const d = deferred.get(name);
+        deferred.delete(name);
+        if (d && d.ver > data.version) onRemote(d);
       } else {
         // Changed again while in flight: send the newer value next. After a merge, keep the original
         // base so the server merges again; basing it on the merged version would drop the entries
         // the merge brought in from the other device.
-        if (!merged) setDirty(name, data.version);
+        if (!merged) { setDirty(name, data.version); acknowledge(name); }
         schedule(name);
       }
     } else if (res.status === 409 && data.error === 'conflict') {
@@ -234,11 +271,13 @@
       setVer(name, data.version);
       clearDirty(name);
       if (live.has(name)) dispatchStorage(name, old, next);
+      acknowledge(name); // a live key now shows the server's value; any other key stays stale until reload
+      deferred.delete(name); // the server's current value supersedes it
       notify('replaced', name);
     } else if (res.status === 409 && data.error === 'epoch') {
       notify('restored');
-    } else if (res.status === 413 || res.status === 422 || res.status === 400) {
-      clearDirty(name); // never accepted as sent; keep the local copy, stop retrying
+    } else if (res.status >= 400 && res.status < 500 && ![403, 408, 429].includes(res.status)) {
+      clearDirty(name); // refused as sent (too large, not synced, invalid): keep the local copy, stop retrying
       if (res.status === 413) notify('quota', name);
       else console.warn('[wickline-selfhost] the server refused', name, data.error);
     } else {
@@ -277,15 +316,20 @@
 
   function onRemote(c) {
     advance(c.rev);
-    if (!isSynced(c.key) || c.ver <= verOf(c.key)) return; // a replay of what this profile has
+    if (!isSynced(c.key)) return;
     if (c.by === clientId) return; // this profile's own write; its upload response sets the version
-    if (dirtyBase(c.key) !== null) return; // a local change is pending; the server resolves it
+    if (dirtyBase(c.key) !== null) { // a local change is pending: the server resolves it, or it replays after
+      if (!deferred.has(c.key) || deferred.get(c.key).ver < c.ver) deferred.set(c.key, c);
+      return;
+    }
     if (live.has(c.key)) {
+      if (c.ver <= verOf(c.key)) return; // a replay of what localStorage has
       const old = get(PREFIX + c.key);
       writeLocal(c.key, c.deleted ? null : c.v);
       setVer(c.key, c.ver);
       dispatchStorage(c.key, old, c.deleted ? null : c.v);
-    } else {
+      acknowledge(c.key);
+    } else if (c.ver > appliedOf(c.key)) { // newer than this page shows (even if another tab hydrated it)
       held.add(c.key);
       notify('remote', c.key);
     }
@@ -333,6 +377,7 @@
   window.addEventListener('storage', (e) => {
     if (e.storageArea !== ls || !e.key) return;
     if (e.key.startsWith(`${NS}dirty.`)) { if (e.newValue !== null) schedule(e.key.slice(NS.length + 6)); render(); return; }
+    if (e.key.startsWith(`${NS}v.`)) { acknowledge(e.key.slice(NS.length + 2)); return; }
     const name = nameOf(e.key);
     if (isSynced(name) && dirtyBase(name) !== null) { schedule(name); return; }
     if (e.key === `${NS}notice` && e.newValue) { try { const n = JSON.parse(e.newValue); handleNotice(n.kind, n.key); } catch { /* ignore */ } }
@@ -345,6 +390,8 @@
     if (reloadWhenVisible) reloadNow();
   });
   window.addEventListener('pagehide', () => { if (leader) flushAll({ keepalive: true }); });
+  // A page restored from the back/forward cache lost its lock and stream and holds stale state.
+  window.addEventListener('pageshow', (e) => { if (e.persisted) location.reload(); });
 
   function needReload(kind) {
     if (document.visibilityState === 'hidden') reloadWhenVisible = true; // never reload a hidden tab

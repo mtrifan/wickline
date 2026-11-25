@@ -33,8 +33,8 @@ test('a missing or repeated <head> anchor serves the page with a visible error b
 });
 
 test('isIndexPath matches every spelling upstream answers with index.html', () => {
-  for (const p of ['/', '/index.html', '/%69ndex.html', '/./index.html', '//index.html', '/x/../index.html']) assert.equal(isIndexPath(p), true, p);
-  for (const p of ['/index.htm', '/js/app.js', '/index.html/x', '/%E0%A4%A', '/selfhost/boot.js']) assert.equal(isIndexPath(p), false, p);
+  for (const p of ['/', '/index.html', '/%69ndex.html', '/./index.html', '//index.html']) assert.equal(isIndexPath(p), true, p);
+  for (const p of ['/index.htm', '/js/app.js', '/index.html/x', '/%E0%A4%A', '/selfhost/boot.js', '/x/..', '/%2E%2E/index.html']) assert.equal(isIndexPath(p), false, p);
 });
 
 test('clientKeyConfig lists synced keys and prefixes only, and honours SYNC_WORKSPACE', () => {

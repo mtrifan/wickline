@@ -5,10 +5,15 @@ import { SYNC_PORT, PASSWORD } from '../../playwright.config.mjs';
 
 const BASE = `http://127.0.0.1:${SYNC_PORT}`;
 const external = /^https?:\/\/(?!127\.0\.0\.1[:/])/;
+/** Hermetic: no market data over HTTP or WebSocket (upstream opens Binance/Coinbase sockets). */
+async function hermetic(ctx) {
+  await ctx.route(external, (r) => r.abort());
+  await ctx.routeWebSocket(/^wss?:\/\/(?!127\.0\.0\.1[:/])/, (ws) => ws.close());
+}
 
 async function device(browser, { blockEvents = false } = {}) {
   const ctx = await browser.newContext();
-  await ctx.route(external, (r) => r.abort()); // hermetic: no market data
+  await hermetic(ctx);
   if (blockEvents) await ctx.route('**/api/selfhost/events**', (r) => r.abort());
   const page = await ctx.newPage();
   await page.goto(`${BASE}/selfhost/login`);
@@ -82,6 +87,13 @@ test('a stale change is replaced by the newer one, with a notice', async ({ brow
   await expect(banner).toContainText('replaced by a newer one', { timeout: 5_000 });
   expect(await getItem(b.page, 'wickline.watchlist')).toBe(fromA);
   expect((await serverState(b.page)).keys.watchlist.v).toBe(fromA);
+  // B's app still shows its old list; writing again must not revert A's change either
+  const { rev } = await serverState(b.page);
+  await setItem(b.page, 'wickline.watchlist', JSON.stringify(['B-again']));
+  await expect.poll(() => b.page.evaluate(() => localStorage.getItem('wickline-selfhost.dirty.watchlist')), { timeout: 5_000 }).toBeNull();
+  const after = await serverState(b.page);
+  expect(after.keys.watchlist.v).toBe(fromA);
+  expect(after.rev).toBe(rev);
   await a.ctx.close(); await b.ctx.close();
 });
 
@@ -143,7 +155,7 @@ test('first run on a profile with older data: the server wins, the old data can 
   await settled(a.page);
 
   const ctx = await browser.newContext();
-  await ctx.route(external, (r) => r.abort());
+  await hermetic(ctx);
   const page = await ctx.newPage();
   await page.goto(`${BASE}/selfhost/login`);
   // same origin, before any sync agent ran: this profile's data predates the self-hosted edition
@@ -175,7 +187,7 @@ test('a lapsed login sends the page to the sign-in form', async ({ browser }) =>
 
 test('without Web Locks (plain-http LAN), a localStorage lease elects one leader and hands over', async ({ browser }) => {
   const ctx = await browser.newContext();
-  await ctx.route(external, (r) => r.abort());
+  await hermetic(ctx);
   await ctx.addInitScript(() => { Object.defineProperty(navigator, 'locks', { value: undefined, configurable: true }); });
   const first = await ctx.newPage();
   await first.goto(`${BASE}/selfhost/login`);
@@ -209,8 +221,50 @@ test('a hidden tab applies a held-back change when shown, without the s/tf hash'
   await expect(b.page.locator('#wl-sync-banner')).toHaveAttribute('data-kind', 'remote', { timeout: 5_000 });
   await b.page.waitForTimeout(500);
   expect(await getItem(b.page, 'wickline.watchlist')).not.toBe(list); // no reload while hidden
-  await Promise.all([b.page.waitForEvent('load'), setHidden(false)]);
+  // The first navigation is the hash strip (history.replaceState), then the reload follows. After
+  // loading, upstream writes the synced chart's own hash, so the final URL proves nothing.
+  const stripped = b.page.waitForEvent('framenavigated', (f) => f === b.page.mainFrame());
+  const loaded = b.page.waitForEvent('load');
+  await setHidden(false).catch(() => {}); // the page reloads during this call, as intended
+  expect(new URL((await stripped).url()).hash).not.toMatch(/(^|[#&])(s|tf)=/);
+  await loaded;
   await expect.poll(() => getItem(b.page, 'wickline.watchlist')).toBe(list);
-  expect(new URL(b.page.url()).hash).not.toMatch(/(^|[#&])(s|tf)=/);
+  await a.ctx.close(); await b.ctx.close();
+});
+
+test('a pop-out hydrating a held-back change does not let the stale main window revert it', async ({ browser }) => {
+  const a = await device(browser);
+  const b = await device(browser);
+  await settled(a.page); await settled(b.page);
+  const fromA = JSON.stringify(['HELD', `T${Date.now()}`]);
+  await setItem(a.page, 'wickline.watchlist', fromA);
+  await expect(b.page.locator('#wl-sync-banner')).toHaveAttribute('data-kind', 'remote', { timeout: 5_000 });
+  const popout = await b.ctx.newPage(); // hydrates A's value into the shared localStorage
+  await popout.goto(`${BASE}/?popout=1`);
+  await expect.poll(() => getItem(popout, 'wickline.watchlist')).toBe(fromA);
+  // the main window still shows its old list; its next write is stale
+  await setItem(b.page, 'wickline.watchlist', JSON.stringify(['STALE-MAIN']));
+  await expect.poll(() => b.page.evaluate(() => localStorage.getItem('wickline-selfhost.dirty.watchlist')), { timeout: 5_000 }).toBeNull();
+  expect((await serverState(b.page)).keys.watchlist.v).toBe(fromA);
+  await a.ctx.close(); await b.ctx.close();
+});
+
+test('alerts added on two devices at once are both kept', async ({ browser }) => {
+  const a = await device(browser);
+  const b = await device(browser);
+  await settled(a.page); await settled(b.page);
+  const base = JSON.parse((await getItem(a.page, 'wickline.alerts')) || '[]');
+  const mk = (id) => ({ id, symbol: 'MSFT', condition: 'up', price: 1, message: '', active: true, created: Date.now() });
+  const idA = `a${Date.now()}`; const idB = `b${Date.now()}`;
+  await Promise.all([
+    setItem(a.page, 'wickline.alerts', JSON.stringify([...base, mk(idA)])),
+    setItem(b.page, 'wickline.alerts', JSON.stringify([...base, mk(idB)])),
+  ]);
+  const ids = async (page) => JSON.parse((await getItem(page, 'wickline.alerts')) || '[]').map((x) => x.id);
+  for (const page of [a.page, b.page]) {
+    await expect.poll(async () => { const got = await ids(page); return got.includes(idA) && got.includes(idB); }, { timeout: 8_000 }).toBe(true);
+  }
+  const server = JSON.parse((await serverState(a.page)).keys.alerts.v).map((x) => x.id);
+  expect(server).toEqual(expect.arrayContaining([idA, idB]));
   await a.ctx.close(); await b.ctx.close();
 });

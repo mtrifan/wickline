@@ -46,7 +46,8 @@ export function isIndexPath(pathname) {
   const parts = [];
   for (const seg of p.split('/')) {
     if (seg === '' || seg === '.') continue;
-    if (seg === '..') parts.pop(); else parts.push(seg);
+    if (seg === '..') return false; // upstream refuses traversal (403); leave it to upstream
+    parts.push(seg);
   }
   return parts.length === 0 || (parts.length === 1 && parts[0] === 'index.html');
 }
