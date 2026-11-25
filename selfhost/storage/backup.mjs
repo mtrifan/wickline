@@ -107,7 +107,11 @@ export function inspectBackup(file, { migrationsDir } = {}) {
  * Replaces <dataDir>/wickline.db with `file`. The server must be stopped (its lock is checked).
  * The current database is first saved as backups/pre-restore-<time>.db. The restored copy gets a
  * new epoch, so browsers holding newer data re-hydrate from it instead of writing that data back.
- * Returns { version, saved, epoch }.
+ *
+ * Credentials never go back in time: the copy's sessions are cleared (every browser signs in
+ * again), its API tokens are replaced by the live database's current ones (a token revoked since
+ * the backup stays revoked), and the TOTP replay counter keeps the higher of the two values.
+ * Returns { version, saved, epoch, tokens }.
  */
 export function restoreDatabase(dataDir, file, { force = false, migrationsDir } = {}) {
   const lock = activeServerLock(dataDir);
@@ -121,9 +125,17 @@ export function restoreDatabase(dataDir, file, { force = false, migrationsDir } 
 
   mkdirSync(backupDir(dataDir), { recursive: true });
   let saved = null;
+  let current = null; // the live credentials: { tokens, totpCounter }
   if (existsSync(live)) {
     const cur = new DatabaseSync(live);
-    try { saved = backupTo(cur, path.join(backupDir(dataDir), `pre-restore-${stamp()}.db`)); } finally { cur.close(); }
+    try {
+      saved = backupTo(cur, path.join(backupDir(dataDir), `pre-restore-${stamp()}.db`));
+      const has = (t) => cur.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t);
+      current = {
+        tokens: has('api_tokens') ? cur.prepare('SELECT id, hash, label, created_at, last_used_at FROM api_tokens').all() : [],
+        totpCounter: has('meta') ? Number(cur.prepare("SELECT value FROM meta WHERE key = 'totp_last_counter'").get()?.value ?? -1) : -1,
+      };
+    } finally { cur.close(); }
   }
 
   // Copy through VACUUM INTO (a consistent single file, whatever WAL the backup had), set the new
@@ -133,11 +145,31 @@ export function restoreDatabase(dataDir, file, { force = false, migrationsDir } 
   try { src.prepare('VACUUM INTO ?').run(tmp); } finally { src.close(); }
   const epoch = randomBytes(8).toString('hex');
   const copy = new DatabaseSync(tmp);
+  let tokens;
   try {
+    copy.exec('BEGIN');
     // Before schema 2 there is no epoch yet; migration 002 creates a random one on the next start.
     copy.prepare("UPDATE meta SET value = ? WHERE key = 'epoch'").run(epoch);
-  } finally { copy.close(); }
+    copy.exec('DELETE FROM sessions');
+    if (current) {
+      copy.exec('DELETE FROM api_tokens');
+      const add = copy.prepare('INSERT INTO api_tokens (id, hash, label, created_at, last_used_at) VALUES (?, ?, ?, ?, ?)');
+      for (const t of current.tokens) add.run(t.id, t.hash, t.label, t.created_at, t.last_used_at);
+      const restored = Number(copy.prepare("SELECT value FROM meta WHERE key = 'totp_last_counter'").get()?.value ?? -1);
+      const counter = Math.max(restored, current.totpCounter);
+      if (counter >= 0) copy.prepare("INSERT INTO meta (key, value) VALUES ('totp_last_counter', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(String(counter));
+    }
+    tokens = copy.prepare('SELECT COUNT(*) AS n FROM api_tokens').get().n;
+    copy.prepare("INSERT INTO audit_log (at, event, detail) VALUES (?, 'restore', ?)").run(Date.now(), JSON.stringify({ from: path.basename(source), tokensFromLive: !!current }));
+    copy.exec('COMMIT');
+  } catch (e) {
+    try { copy.exec('ROLLBACK'); } catch { /* not in a transaction */ }
+    copy.close();
+    rmSync(tmp, { force: true });
+    throw e;
+  }
+  copy.close();
   for (const ext of ['-wal', '-shm']) rmSync(live + ext, { force: true });
   renameSync(tmp, live);
-  return { version, saved, epoch: version >= 2 ? epoch : null };
+  return { version, saved, epoch: version >= 2 ? epoch : null, tokens, tokensFromLive: !!current };
 }

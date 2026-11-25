@@ -76,6 +76,7 @@ try {
     const r = restoreDatabase(dataDir, sub, { force: rest.includes('--force') });
     process.stdout.write(`restored ${sub} (schema ${r.version})\n`);
     if (r.saved) process.stdout.write(`the previous database was saved as ${r.saved}\n`);
+    process.stdout.write(`every browser must sign in again; ${r.tokens} API token(s) ${r.tokensFromLive ? 'carried over from the database being replaced' : 'restored from the backup'}\n`);
     process.stdout.write('Start the container. Open browsers reload into the restored data.\n');
   } else if (cmd === 'sessions' && sub === 'revoke-all') {
     await withStore((s) => { s.deleteAllSessions(); s.audit('sessions.revoke-all', { detail: 'cli' }); process.stdout.write('all sessions revoked\n'); });

@@ -123,3 +123,26 @@ test('a Phase 1 backup restores and is migrated on the next start', () => withDi
   assert.deepEqual(migrated, ['002_sync.sql']);
   db.close();
 }));
+
+test('restore never brings back revoked credentials or a used TOTP code', () => withDir((root) => {
+  const dir = path.join(root, 'data');
+  const { db } = openDatabase(dir);
+  db.prepare('INSERT INTO sessions (id, created_at, last_seen_at, expires_at) VALUES (?, 0, 0, ?)').run('old-session', Date.now() + 1e9);
+  db.prepare("INSERT INTO api_tokens (id, hash, label, created_at) VALUES ('t-revoked', 'h1', 'revoked later', 0)").run();
+  db.prepare("INSERT INTO meta (key, value) VALUES ('totp_last_counter', '100')").run();
+  const backup = runBackup(db, dir);
+  // after the backup: the token is revoked, a new one is created, more TOTP codes are used
+  db.prepare("DELETE FROM api_tokens WHERE id = 't-revoked'").run();
+  db.prepare("INSERT INTO api_tokens (id, hash, label, created_at) VALUES ('t-new', 'h2', 'created later', 1)").run();
+  db.prepare("UPDATE meta SET value = '250' WHERE key = 'totp_last_counter'").run();
+  db.close();
+
+  const r = restoreDatabase(dir, backup);
+  assert.deepEqual([r.tokens, r.tokensFromLive], [1, true]);
+  const check = new DatabaseSync(path.join(dir, 'wickline.db'), { readOnly: true });
+  assert.equal(check.prepare('SELECT COUNT(*) n FROM sessions').get().n, 0);
+  assert.deepEqual(check.prepare('SELECT id FROM api_tokens').all().map((t) => t.id), ['t-new']);
+  assert.equal(check.prepare("SELECT value FROM meta WHERE key = 'totp_last_counter'").get().value, '250');
+  assert.equal(check.prepare("SELECT event FROM audit_log ORDER BY id DESC LIMIT 1").get().event, 'restore');
+  check.close();
+}));
