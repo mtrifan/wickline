@@ -42,7 +42,11 @@ function parseWrite(body, method) {
   return { value: method === 'PUT' ? value : null, baseVersion, epoch, clientId: clientId ?? null };
 }
 
-export function createSyncRoutes({ state, hub }) {
+/**
+ * `isValid(auth)` returns a function telling whether that login is still valid; open event streams
+ * call it on every heartbeat.
+ */
+export function createSyncRoutes({ state, hub, isValid = () => () => true }) {
   /** Handles the request if it is a sync route; returns false otherwise. */
   return async function handleSync(req, res, url, auth) {
     const { pathname } = url;
@@ -52,7 +56,7 @@ export function createSyncRoutes({ state, hub }) {
     }
     if (pathname === '/api/selfhost/events') {
       if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, { Allow: 'GET' });
-      return hub.handle(req, res, url, { session: auth?.kind === 'session' ? auth.token : null });
+      return hub.handle(req, res, url, { session: auth?.kind === 'session' ? auth.token : null, isValid: isValid(auth) });
     }
     if (!pathname.startsWith(PREFIX)) return false;
 

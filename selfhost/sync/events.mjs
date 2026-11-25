@@ -6,7 +6,11 @@
 // with Last-Event-ID (which takes precedence over `since`) and receives everything it missed,
 // deletions included. A stream from another epoch, or one claiming a rev this server has not
 // reached (the database was restored), gets `event: reset` and is closed: the client must fetch a
-// fresh snapshot rather than resume.
+// fresh snapshot rather than resume. So does a backlog larger than the buffer cap: the snapshot
+// is a plain response, while a stream that cannot drain would be dropped and reconnect forever.
+//
+// Every heartbeat re-checks each stream's credentials, so an expired session or a revoked token
+// does not keep receiving changes over a connection opened while it was valid.
 
 const HEARTBEAT_MS = 25_000;
 /** A client this far behind on reading is dropped; it resumes from Last-Event-ID on reconnect. */
@@ -15,7 +19,7 @@ const MAX_BUFFERED = 8 * 1024 * 1024;
 const frame = (event, data, id) => `${id != null ? `id: ${id}\n` : ''}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 
 export function createEventHub(state, { maxClients = 32, heartbeatMs = HEARTBEAT_MS } = {}) {
-  /** res → { session } */
+  /** res → { session, isValid } */
   const clients = new Map();
 
   const drop = (res) => { clients.delete(res); try { res.end(); } catch { /* gone */ } };
@@ -32,11 +36,25 @@ export function createEventHub(state, { maxClients = 32, heartbeatMs = HEARTBEAT
     for (const res of [...clients.keys()]) send(res, chunk);
   });
 
-  const heartbeat = setInterval(() => { for (const res of [...clients.keys()]) send(res, ': ping\n\n'); }, heartbeatMs);
+  function revalidate() {
+    for (const [res, c] of [...clients]) {
+      let ok = false;
+      try { ok = c.isValid(); } catch { /* treat as invalid */ }
+      if (!ok) drop(res);
+    }
+  }
+
+  const heartbeat = setInterval(() => {
+    revalidate();
+    for (const res of [...clients.keys()]) send(res, ': ping\n\n');
+  }, heartbeatMs);
   heartbeat.unref();
 
-  /** Serves one stream. `session` identifies the login, so logging out can close its streams. */
-  function handle(req, res, url, { session = null } = {}) {
+  /**
+   * Serves one stream. `session` identifies the login, so logging out can close its streams;
+   * `isValid()` is re-checked on every heartbeat.
+   */
+  function handle(req, res, url, { session = null, isValid = () => true } = {}) {
     if (clients.size >= maxClients) {
       res.writeHead(503, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Retry-After': '30' });
       return res.end(JSON.stringify({ error: 'Too many event streams' }));
@@ -57,8 +75,10 @@ export function createEventHub(state, { maxClients = 32, heartbeatMs = HEARTBEAT
     if (!Number.isSafeInteger(since) || since > state.rev()) return reset();
 
     // Replay and subscribe in the same tick: writes are synchronous, so none can fall in between.
-    for (const c of state.changesSince(since)) res.write(frame('change', c, c.rev));
-    clients.set(res, { session });
+    const backlog = state.changesSince(since).map((c) => frame('change', c, c.rev));
+    if (backlog.reduce((n, f) => n + Buffer.byteLength(f), 0) > MAX_BUFFERED) return reset();
+    for (const f of backlog) res.write(f);
+    clients.set(res, { session, isValid });
     const gone = () => clients.delete(res);
     res.on('close', gone);
     req.on('close', gone);
@@ -81,5 +101,5 @@ export function createEventHub(state, { maxClients = 32, heartbeatMs = HEARTBEAT
     for (const res of [...clients.keys()]) drop(res);
   }
 
-  return { handle, resetAll, dropSession, close, get size() { return clients.size; } };
+  return { handle, resetAll, dropSession, revalidate, close, get size() { return clients.size; } };
 }

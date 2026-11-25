@@ -52,7 +52,15 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   const purgeTimer = setInterval(() => store.purgeExpired(), 3600_000).unref();
   const sync = createSyncState(db, { syncWorkspace: cfg.syncWorkspace });
   const hub = createEventHub(sync);
-  const handleSync = createSyncRoutes({ state: sync, hub });
+  const handleSync = createSyncRoutes({
+    state: sync,
+    hub,
+    isValid: (auth) => {
+      if (auth?.kind === 'session') return () => store.isSessionValid(auth.token);
+      if (auth?.kind === 'token') return () => cfg.allowApiTokens && store.isTokenValid(auth.id);
+      return () => cfg.authMode === 'none';
+    },
+  });
 
   const passwordHash = cfg.authMode === 'password' ? (cfg.passwordHash || hashPassword(cfg.password)) : null;
   const limiter = createLoginLimiter({ globalSpacingMs: cfg.exposure === 'public' ? 1000 : 0 });

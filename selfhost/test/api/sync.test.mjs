@@ -251,3 +251,37 @@ test('SYNC_WORKSPACE=false refuses workspace writes', async () => {
   const { epoch } = await snapshot(ctx);
   assert.equal((await put(ctx, 'workspace', { value: '{}', baseVersion: 0, epoch })).status, 422);
 });
+
+test('streams are re-checked: an expired session or a revoked token loses its stream', async () => {
+  const ctx = await start();
+  const { epoch } = await snapshot(ctx);
+  const viaSession = stream(ctx, { epoch, since: 0 });
+  const { id, token } = ctx.app.store.createToken('test');
+  const viaToken = stream({ ...ctx, cookie: '' }, { epoch, since: 0 }, { authorization: `Bearer ${token}` });
+  await viaSession.ready; await viaToken.ready;
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(ctx.app.hub.size, 2);
+  ctx.app.hub.revalidate();
+  assert.equal(ctx.app.hub.size, 2, 'valid credentials keep their streams');
+  ctx.app.store.deleteSession(ctx.cookie.slice('wl_session='.length)); // expiry or `cli.mjs` revocation, not a logout
+  ctx.app.store.deleteToken(id);
+  ctx.app.hub.revalidate();
+  await viaSession.until(() => viaSession.ended);
+  await viaToken.until(() => viaToken.ended);
+  assert.equal(ctx.app.hub.size, 0);
+});
+
+test('a backlog larger than the buffer cap is answered with reset, not replayed', async () => {
+  const ctx = await start();
+  const { epoch } = await snapshot(ctx);
+  const big = 'x'.repeat(4_500_000);
+  assert.equal((await put(ctx, 'drawings.A', { value: big, baseVersion: 0, epoch })).status, 200);
+  assert.equal((await put(ctx, 'drawings.B', { value: big, baseVersion: 0, epoch })).status, 200);
+  const s = stream(ctx, { epoch, since: 0 });
+  await s.until(() => s.ended);
+  assert.deepEqual(s.events.map((e) => e.event), ['reset']);
+  const recent = stream(ctx, { epoch, since: 1 });
+  await recent.until(() => recent.events.length === 1);
+  assert.equal(recent.events[0].data.key, 'drawings.B', 'a small backlog still replays');
+  recent.close();
+});
