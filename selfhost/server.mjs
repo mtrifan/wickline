@@ -54,9 +54,8 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   if (proxy.url) { await proxyMod.setServerProxy(proxy.url); log.info('outbound traffic goes through a proxy', { proxy: proxy.url.replace(/\/\/[^@/]*@/, '//') }); }
 
   const lock = holdServerLock(cfg.dataDir); // before opening the database; `cli.mjs restore` refuses while it is fresh
-  let opened;
-  try { opened = openDatabase(cfg.dataDir, { log }); } catch (e) { lock.release(); throw e; }
-  const { db, version: schema, migrated, backup } = opened;
+  try { // a failed start releases the lock, so the next attempt is not refused
+  const { db, version: schema, migrated, backup } = openDatabase(cfg.dataDir, { log });
   const swept = sweepTemporaryFiles(cfg.dataDir);
   if (swept.length) log.info('removed temporary files left by an interrupted download or restore', { files: swept });
   const backups = startBackupScheduler({ db, dataDir: cfg.dataDir, intervalHours: cfg.backupIntervalHours, keep: cfg.backupKeep, log });
@@ -254,6 +253,10 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   }
 
   return { server, port, close, state, db, store, sync, hub, outbox };
+  } catch (e) {
+    lock.release();
+    throw e;
+  }
 }
 
 // ---------------------------------------------------------------------------------------------

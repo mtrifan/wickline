@@ -229,13 +229,21 @@ test('the sweep skips dangling links instead of failing startup', () => withDir(
   assert.deepEqual(sweepTemporaryFiles(dir), []);
 }));
 
-test('a second container on the same data directory is refused; the same container restarting is not', () => withDir((dir) => {
-  const first = holdServerLock(dir, { host: 'container-a' });
-  assert.throws(() => holdServerLock(dir, { host: 'container-b' }), DataDirInUseError);
-  const again = holdServerLock(dir, { host: 'container-a' }); // a crash and restart of the same container
-  assert.equal(activeServerLock(dir).host, 'container-a');
-  again.release();
-  first.release();
-  writeFileSync(path.join(dir, 'server.lock'), JSON.stringify({ pid: 1 })); // a lock written before hosts were recorded
-  holdServerLock(dir, { host: 'container-b' }).release();
+test('the data-directory lock: another container or a live process is refused; a dead holder or a stale lock is taken over', () => withDir((dir) => {
+  const first = holdServerLock(dir, { host: 'container-a', pid: 100, isAlive: () => true });
+  assert.throws(() => holdServerLock(dir, { host: 'container-b', pid: 1 }), (e) => e instanceof DataDirInUseError && /host container-a/.test(e.message));
+  assert.throws(() => holdServerLock(dir, { host: 'container-a', pid: 200, isAlive: () => true }), (e) => e instanceof DataDirInUseError && /process 100 on this host/.test(e.message));
+  // the same container after a crash: the old process is gone (or its PID is reused by the new one)
+  holdServerLock(dir, { host: 'container-a', pid: 300, isAlive: () => false });
+  assert.equal(activeServerLock(dir).pid, 300);
+  holdServerLock(dir, { host: 'container-a', pid: 300, isAlive: () => true });
+  // a stale lock from another container (stopped uncleanly more than 90 s ago)
+  const old = new Date(Date.now() - 120_000);
+  utimesSync(path.join(dir, 'server.lock'), old, old);
+  const b = holdServerLock(dir, { host: 'container-b', pid: 1 });
+  assert.equal(activeServerLock(dir).host, 'container-b');
+  first.release(); // taken over: must not remove container-b's lock
+  assert.equal(activeServerLock(dir).host, 'container-b');
+  b.release();
+  assert.equal(existsSync(path.join(dir, 'server.lock')), false);
 }));

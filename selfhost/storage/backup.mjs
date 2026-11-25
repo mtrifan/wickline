@@ -3,7 +3,7 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, readFileSync } from 'node:fs';
+import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { hostname } from 'node:os';
 import { backupTo, loadMigrations } from './db.mjs';
@@ -66,23 +66,53 @@ export const LOCK_STALE_MS = 90_000;
 
 export class DataDirInUseError extends Error {}
 
+const alive = (pid) => {
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+};
+
 /**
  * Marks the data directory as in use; the lock is refreshed every 30 s and removed on stop.
- * Refuses when another container holds a fresh lock (two servers on one database would corrupt
- * it and send every notification twice). The same container restarting after a crash is allowed:
- * the lock records the host name, which stays the same across restarts of one container.
+ * Two servers on one database would corrupt it and send every notification twice, so a lock is
+ * taken with an exclusive create (no window between checking and writing). An existing lock is
+ * taken over only when it cannot belong to a running server:
+ *   - it is stale (not refreshed for 90 s: the server stopped uncleanly long enough ago), or
+ *   - it was written on this host by a process that no longer exists (this container restarting
+ *     after a crash, even when the new process reuses the old PID).
+ * Anything else is refused: another container, or a live process on this host.
  */
-export function holdServerLock(dataDir, { host = hostname() } = {}) {
+export function holdServerLock(dataDir, { host = hostname(), pid = process.pid, isAlive = alive } = {}) {
   const file = path.join(dataDir, LOCK);
-  const other = activeServerLock(dataDir);
-  if (other && other.host && other.host !== host) {
-    throw new DataDirInUseError(`Another Wickline Self-Hosted (host ${other.host}) is using ${dataDir}. Stop it first: two servers must never share one data directory.`);
-  }
   mkdirSync(dataDir, { recursive: true });
-  writeFileSync(file, JSON.stringify({ pid: process.pid, host, startedAt: new Date().toISOString() }));
+  const body = JSON.stringify({ pid, host, startedAt: new Date().toISOString() });
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const fd = openSync(file, 'wx');
+      try { writeFileSync(fd, body); } finally { closeSync(fd); }
+      break;
+    } catch (e) {
+      if (e.code !== 'EEXIST' || attempt > 0) {
+        if (e.code === 'EEXIST') throw new DataDirInUseError(`Another Wickline Self-Hosted started on ${dataDir} at the same moment. Run only one.`);
+        throw e;
+      }
+      const other = activeServerLock(dataDir);
+      const takeOver = !other // stale, or vanished meanwhile
+        || (other.host === host && (other.pid === pid || !Number.isInteger(other.pid) || !isAlive(other.pid)));
+      if (!takeOver) {
+        const who = other.host && other.host !== host ? `host ${other.host}` : `process ${other.pid} on this host`;
+        throw new DataDirInUseError(`Another Wickline Self-Hosted (${who}) is using ${dataDir}. Stop it first: two servers must never share one data directory. After an unclean stop, wait 90 seconds.`);
+      }
+      rmSync(file, { force: true });
+    }
+  }
   const timer = setInterval(() => { try { const t = new Date(); utimesSync(file, t, t); } catch { /* removed */ } }, 30_000);
   timer.unref();
-  return { release() { clearInterval(timer); rmSync(file, { force: true }); } };
+  return {
+    release() {
+      clearInterval(timer);
+      // Only our own lock: one taken over by another server stays.
+      try { if (readFileSync(file, 'utf8') === body) rmSync(file, { force: true }); } catch { /* already gone */ }
+    },
+  };
 }
 
 /** The running server's lock, or null (none, or stale after an unclean stop). */
