@@ -5,7 +5,10 @@ import { mkdtempSync, mkdirSync, symlinkSync, rmSync, writeFileSync, readdirSync
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { openDatabase } from '../../storage/db.mjs';
+import { openDatabase, loadMigrations } from '../../storage/db.mjs';
+
+const SCHEMA = loadMigrations().length; // the current schema version
+const AFTER_PHASE_1 = loadMigrations().slice(1).map((m) => m.name); // what a Phase 1 database runs
 import { runBackup, listBackups, startBackupScheduler, holdServerLock, activeServerLock, inspectBackup, restoreDatabase, RestoreError, sweepTemporaryFiles } from '../../storage/backup.mjs';
 import { createSyncState } from '../../sync/state.mjs';
 
@@ -73,7 +76,7 @@ test('restore replaces the database, saves the previous one and starts a new epo
   db.close();
 
   const r = restoreDatabase(dir, backup);
-  assert.equal(r.version, 2);
+  assert.equal(r.version, SCHEMA);
   assert.match(r.saved, /backups\/pre-restore-\d{8}-\d{6}\.db$/);
   assert.deepEqual(keysOf(dir), { watchlist: '["AAPL"]' });
   assert.notEqual(epochOf(dir), before);
@@ -92,7 +95,7 @@ test('restore refuses a running server, damaged or foreign files, newer schemas 
 
   const lock = holdServerLock(dir);
   refused(() => restoreDatabase(dir, good), /is running/);
-  assert.equal(restoreDatabase(dir, good, { force: true }).version, 2, '--force overrides');
+  assert.equal(restoreDatabase(dir, good, { force: true }).version, SCHEMA, '--force overrides');
   lock.release();
 
   const garbage = path.join(root, 'garbage.db');
@@ -107,7 +110,7 @@ test('restore refuses a running server, damaged or foreign files, newer schemas 
   refused(() => restoreDatabase(dir, newer), /newer than this release/);
   refused(() => restoreDatabase(dir, path.join(dir, 'wickline.db')), /live database/);
   refused(() => restoreDatabase(dir, path.join(root, 'missing.db')), /No such file/);
-  assert.equal(inspectBackup(good).version, 2);
+  assert.equal(inspectBackup(good).version, SCHEMA);
 }));
 
 test('a Phase 1 backup restores and is migrated on the next start', () => withDir((root) => {
@@ -121,7 +124,7 @@ test('a Phase 1 backup restores and is migrated on the next start', () => withDi
   const r = restoreDatabase(dir, path.join(p1, 'wickline.db'));
   assert.deepEqual([r.version, r.epoch], [1, null]);
   const { migrated, db } = openDatabase(dir);
-  assert.deepEqual(migrated, ['002_sync.sql']);
+  assert.deepEqual(migrated, AFTER_PHASE_1);
   db.close();
 }));
 

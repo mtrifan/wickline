@@ -9,7 +9,7 @@ import path from 'node:path';
 import { startSelfhost } from '../../server.mjs';
 import { loadConfig } from '../../config.mjs';
 import { silentLogger } from '../../log.mjs';
-import { openDatabase } from '../../storage/db.mjs';
+import { openDatabase, loadMigrations } from '../../storage/db.mjs';
 
 const PASSWORD = 'correct horse battery staple';
 const dirs = [];
@@ -246,7 +246,7 @@ test('a Phase 1 database upgrades to the sync schema after a backup', async () =
   writeFileSync(path.join(phase1, '001_auth.sql'), readFileSync(new URL('001_auth.sql', real)));
   openDatabase(dir, { migrationsDir: phase1 }).db.close();
   const { db, migrated, backup } = openDatabase(dir);
-  assert.deepEqual(migrated, ['002_sync.sql']);
+  assert.deepEqual(migrated, loadMigrations().slice(1).map((m) => m.name));
   assert.ok(backup && readdirSync(path.join(dir, 'backups')).length === 1);
   assert.match(db.prepare("SELECT value FROM meta WHERE key = 'epoch'").get().value, /^[0-9a-f]{16}$/);
   db.close();
