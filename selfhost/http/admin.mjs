@@ -17,7 +17,10 @@ import { SyncError, MAX_TOTAL_CHARS } from '../sync/state.mjs';
 export const EXPORT_FORMAT = { app: 'wickline-selfhost', format: 1 };
 const stamp = () => new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
 
-export function createAdminRoutes({ state, db, dataDir, version, log }) {
+/** A download not finished by then is cut off, so a stalled client cannot block later downloads. */
+const DOWNLOAD_TIMEOUT_MS = 10 * 60_000;
+
+export function createAdminRoutes({ state, db, dataDir, version, log, downloadTimeoutMs = DOWNLOAD_TIMEOUT_MS }) {
   let downloading = false; // one at a time: each holds a full copy of the database on disk
 
   function backup(req, res) {
@@ -25,15 +28,26 @@ export function createAdminRoutes({ state, db, dataDir, version, log }) {
     downloading = true;
     const file = path.join(backupDir(dataDir), `.download-${randomBytes(6).toString('hex')}.db`);
     try { backupTo(db, file); } catch (e) { downloading = false; rmSync(file, { force: true }); throw e; }
-    const cleanup = () => { downloading = false; rmSync(file, { force: true }); };
-    res.writeHead(200, {
-      'Content-Type': 'application/vnd.sqlite3',
-      'Content-Disposition': `attachment; filename="wickline-${stamp()}.db"`,
-      'Cache-Control': 'no-store',
-    });
+    let done = false;
+    const timer = setTimeout(() => { log?.warn('backup download timed out'); res.destroy(); }, downloadTimeoutMs);
+    const cleanup = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      downloading = false;
+      rmSync(file, { force: true });
+    };
+    res.on('finish', cleanup);
+    res.on('close', cleanup);
+    try {
+      res.writeHead(200, {
+        'Content-Type': 'application/vnd.sqlite3',
+        'Content-Disposition': `attachment; filename="wickline-${stamp()}.db"`,
+        'Cache-Control': 'no-store',
+      });
+    } catch (e) { cleanup(); throw e; }
     const stream = createReadStream(file);
     stream.on('error', (e) => { log?.error('backup download failed', { error: e }); res.destroy(); cleanup(); });
-    res.on('close', cleanup);
     stream.pipe(res);
   }
 

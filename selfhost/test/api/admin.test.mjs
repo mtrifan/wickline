@@ -156,8 +156,32 @@ test('only one backup download runs at a time', async () => {
   const second = await fetch(`${ctx.base}/api/selfhost/backup`, { headers: { cookie: ctx.cookie } });
   assert.equal(second.status, 429);
   slow.req.destroy();
-  await new Promise((r) => setTimeout(r, 100));
-  const third = await fetch(`${ctx.base}/api/selfhost/backup`, { headers: { cookie: ctx.cookie } });
+  let third;
+  for (let i = 0; i < 50; i++) { // the server notices the closed socket shortly
+    third = await fetch(`${ctx.base}/api/selfhost/backup`, { headers: { cookie: ctx.cookie } });
+    if (third.status !== 429) break;
+    await third.arrayBuffer();
+    await new Promise((r) => setTimeout(r, 50));
+  }
   assert.equal(third.status, 200);
   await third.arrayBuffer();
+});
+
+test('a stalled backup download is cut off, so later downloads work', async () => {
+  const { createAdminRoutes } = await import('../../http/admin.mjs');
+  const ctx = await start();
+  await put(ctx, 'drawings.BIG', 'x'.repeat(4_000_000));
+  const handle = createAdminRoutes({ state: ctx.app.sync, db: ctx.app.db, dataDir: ctx.dir, version: {}, downloadTimeoutMs: 200 });
+  const server = http.createServer((req, res) => handle(req, res, new URL(req.url, 'http://x')));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}/api/selfhost/backup`;
+  const stalled = await new Promise((resolve) => http.get(url, (res) => { res.pause(); resolve(res); }));
+  assert.equal(stalled.statusCode, 200);
+  assert.equal((await fetch(url)).status, 429);
+  await new Promise((r) => setTimeout(r, 400)); // past the timeout
+  const next = await fetch(url);
+  assert.equal(next.status, 200);
+  await next.arrayBuffer();
+  stalled.destroy();
+  await new Promise((r) => server.close(r));
 });

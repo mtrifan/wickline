@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { backupTo, loadMigrations } from './db.mjs';
+import { counterAt } from '../auth/totp.mjs';
 
 const SCHEDULED = /^wickline-\d{8}-\d{6}(-[0-9a-f]{4})?\.db$/;
 const stamp = (d = new Date()) => d.toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
@@ -127,6 +128,7 @@ export function restoreDatabase(dataDir, file, { force = false, migrationsDir } 
   mkdirSync(backupDir(dataDir), { recursive: true });
   let saved = null;
   let current = null; // the live credentials: { tokens, totpCounter }
+  let liveDamaged = false;
   if (existsSync(live)) {
     // Best effort: a damaged live database is the main reason to restore, so failing to read it
     // must not stop the restore. Its raw files are kept instead.
@@ -145,6 +147,7 @@ export function restoreDatabase(dataDir, file, { force = false, migrationsDir } 
       copyFileSync(live, saved);
       for (const ext of ['-wal', '-shm']) if (existsSync(live + ext)) copyFileSync(live + ext, saved + ext);
       current = null;
+      liveDamaged = true;
     } finally { try { cur?.close(); } catch { /* damaged */ } }
   }
 
@@ -161,16 +164,19 @@ export function restoreDatabase(dataDir, file, { force = false, migrationsDir } 
     // Before schema 2 there is no epoch yet; migration 002 creates a random one on the next start.
     copy.prepare("UPDATE meta SET value = ? WHERE key = 'epoch'").run(epoch);
     copy.exec('DELETE FROM sessions');
-    if (current) {
+    if (current || liveDamaged) {
+      // The live token set replaces the backup's. If the live database is unreadable, which tokens
+      // were revoked since cannot be known, so none are kept (fail closed).
       copy.exec('DELETE FROM api_tokens');
       const add = copy.prepare('INSERT INTO api_tokens (id, hash, label, created_at, last_used_at) VALUES (?, ?, ?, ?, ?)');
-      for (const t of current.tokens) add.run(t.id, t.hash, t.label, t.created_at, t.last_used_at);
-      const restored = Number(copy.prepare("SELECT value FROM meta WHERE key = 'totp_last_counter'").get()?.value ?? -1);
-      const counter = Math.max(restored, current.totpCounter);
-      if (counter >= 0) copy.prepare("INSERT INTO meta (key, value) VALUES ('totp_last_counter', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(String(counter));
+      for (const t of current?.tokens ?? []) add.run(t.id, t.hash, t.label, t.created_at, t.last_used_at);
     }
+    // No two-factor code from before the restore can be replayed, whatever either database recorded.
+    const restored = Number(copy.prepare("SELECT value FROM meta WHERE key = 'totp_last_counter'").get()?.value ?? -1);
+    const counter = Math.max(restored, current?.totpCounter ?? -1, counterAt(Date.now()));
+    copy.prepare("INSERT INTO meta (key, value) VALUES ('totp_last_counter', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(String(counter));
     tokens = copy.prepare('SELECT COUNT(*) AS n FROM api_tokens').get().n;
-    copy.prepare("INSERT INTO audit_log (at, event, detail) VALUES (?, 'restore', ?)").run(Date.now(), JSON.stringify({ from: path.basename(source), tokensFromLive: !!current }));
+    copy.prepare("INSERT INTO audit_log (at, event, detail) VALUES (?, 'restore', ?)").run(Date.now(), JSON.stringify({ from: path.basename(source), tokensFromLive: !!current, liveDamaged }));
     copy.exec('COMMIT');
   } catch (e) {
     try { copy.exec('ROLLBACK'); } catch { /* not in a transaction */ }
@@ -186,7 +192,7 @@ export function restoreDatabase(dataDir, file, { force = false, migrationsDir } 
   for (const ext of ['-wal', '-shm']) if (existsSync(live + ext)) renameSync(live + ext, aside + ext);
   renameSync(tmp, live);
   for (const ext of ['-wal', '-shm']) rmSync(aside + ext, { force: true });
-  return { version, saved, epoch: version >= 2 ? epoch : null, tokens, tokensFromLive: !!current };
+  return { version, saved, epoch: version >= 2 ? epoch : null, tokens, tokensFromLive: !!current, liveDamaged };
 }
 
 /**
@@ -199,7 +205,10 @@ export function sweepTemporaryFiles(dataDir, { minAgeMs = 10 * 60_000, now = Dat
     if (!existsSync(dir)) return;
     for (const n of readdirSync(dir)) {
       const f = path.join(dir, n);
-      if (re.test(n) && now - statSync(f).mtimeMs > minAgeMs) { rmSync(f, { force: true }); removed.push(f); }
+      if (!re.test(n)) continue;
+      let age;
+      try { age = now - statSync(f).mtimeMs; } catch { continue; } // vanished, or a dangling link
+      if (age > minAgeMs) { rmSync(f, { force: true }); removed.push(f); }
     }
   };
   sweep(backupDir(dataDir), /^\.download-[0-9a-f]+\.db$/);

@@ -1,7 +1,7 @@
 // Backups, the server lock and restore.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync, existsSync, utimesSync, readFileSync, copyFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync, writeFileSync, readdirSync, existsSync, utimesSync, readFileSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -143,7 +143,7 @@ test('restore never brings back revoked credentials or a used TOTP code', () => 
   const check = new DatabaseSync(path.join(dir, 'wickline.db'), { readOnly: true });
   assert.equal(check.prepare('SELECT COUNT(*) n FROM sessions').get().n, 0);
   assert.deepEqual(check.prepare('SELECT id FROM api_tokens').all().map((t) => t.id), ['t-new']);
-  assert.equal(check.prepare("SELECT value FROM meta WHERE key = 'totp_last_counter'").get().value, '250');
+  assert.ok(Number(check.prepare("SELECT value FROM meta WHERE key = 'totp_last_counter'").get().value) >= Math.floor(Date.now() / 30_000), 'no earlier code can be replayed');
   assert.equal(check.prepare("SELECT event FROM audit_log ORDER BY id DESC LIMIT 1").get().event, 'restore');
   check.close();
 }));
@@ -162,6 +162,7 @@ test('restore works over a corrupt live database and keeps its raw files', () =>
   const { db } = openDatabase(dir);
   const st = createSyncState(db);
   st.write('watchlist', { value: '["GOOD"]', baseVersion: 0, epoch: st.epoch() });
+  db.prepare("INSERT INTO api_tokens (id, hash, label, created_at) VALUES ('t-old', 'h', 'x', 0)").run();
   const good = runBackup(db, dir);
   db.close();
   writeFileSync(path.join(dir, 'wickline.db'), 'garbage, not a database'.repeat(200));
@@ -169,6 +170,8 @@ test('restore works over a corrupt live database and keeps its raw files', () =>
   assert.match(r.saved, /pre-restore-\d{8}-\d{6}-raw\.db$/);
   assert.match(readFileSync(r.saved, 'utf8'), /^garbage/);
   assert.equal(r.tokensFromLive, false);
+  assert.equal(r.liveDamaged, true);
+  assert.equal(r.tokens, 0, 'which tokens were revoked is unknown: none are kept');
   assert.deepEqual(keysOf(dir), { watchlist: '["GOOD"]' });
 }));
 
@@ -215,4 +218,10 @@ test('import skips keys that are device-local on this server and writes the epoc
   assert.equal(r.keys, 1);
   assert.deepEqual(seen, { e: r.epoch, stored: r.epoch, rows: { watchlist: '["X"]' } }, 'listeners run after both are committed');
   db.close();
+}));
+
+test('the sweep skips dangling links instead of failing startup', () => withDir((dir) => {
+  mkdirSync(path.join(dir, 'backups'), { recursive: true });
+  symlinkSync(path.join(dir, 'missing'), path.join(dir, 'backups', '.download-dead01.db'));
+  assert.deepEqual(sweepTemporaryFiles(dir), []);
 }));

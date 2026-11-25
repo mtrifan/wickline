@@ -39,8 +39,8 @@ Back up the `/data` folder with your usual tools too; the backups live inside it
 1. Stop the container. The restore refuses to run while the server is up.
 2. Run the restore with the same image and data folder:
    `docker run --rm -v <appdata>:/data <image> node selfhost/cli.mjs restore /data/backups/wickline-<time>.db`
-   It checks the file's integrity and schema version, saves the current database as `/data/backups/pre-restore-<time>.db`, then swaps the backup in. Logins never go back in time: every browser signs in again, API tokens are carried over from the database being replaced (a token revoked after the backup stays revoked), and used two-factor codes stay used. Restoring into an empty data folder keeps the backup's tokens instead.
-   If the current database is damaged, its raw file is kept as `pre-restore-<time>-raw.db` and the restore goes ahead.
+   It checks the file's integrity and schema version, saves the current database as `/data/backups/pre-restore-<time>.db`, then swaps the backup in. Logins never go back in time: every browser signs in again (with two-factor login, use the next code), and API tokens are carried over from the database being replaced, so a token revoked after the backup stays revoked. Restoring into an empty data folder keeps the backup's tokens instead.
+   If the current database is damaged, its raw file is kept as `pre-restore-<time>-raw.db` and the restore goes ahead. Which tokens were revoked cannot be read from a damaged file, so all API tokens are removed; create new ones with `cli.mjs token create`.
 3. Start the container. Open browsers show "The server's data was restored or imported" and reload into it. A browser with changes newer than the backup offers them as a download.
 
 If the server stopped uncleanly, the restore may report it as running for up to 90 seconds. Wait, or add `--force` once you are sure it is stopped.
