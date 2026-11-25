@@ -181,33 +181,44 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
    */
   function replaceAll(keys) {
     if (!keys || typeof keys !== 'object' || Array.isArray(keys)) throw new SyncError(422, { error: 'keys must be an object' });
-    const entries = Object.entries(keys);
+    const accepted = [];
+    const skipped = [];
     let chars = 0;
-    for (const [k, v] of entries) {
+    for (const [k, v] of Object.entries(keys)) {
+      // Device-local here (workspace with SYNC_WORKSPACE=false) but synced where it was exported: skip it.
+      if (policyFor(k, opts) === 'local') { skipped.push(k); continue; }
       if (!synced(k)) throw new SyncError(422, { error: `Not a synced key: ${String(k).slice(0, 80)}` });
       if (typeof v !== 'string') throw new SyncError(422, { error: `The value of ${k} must be a string` });
       if (v.length > MAX_VALUE_CHARS) throw new SyncError(413, { error: `The value of ${k} is too large` });
       chars += v.length;
+      accepted.push([k, v]);
     }
-    if (chars > maxTotalChars || entries.length > maxKeys) throw new SyncError(413, { error: 'Synced state quota exceeded' });
+    if (chars > maxTotalChars || accepted.length > maxKeys) throw new SyncError(413, { error: 'Synced state quota exceeded' });
+    const e = newEpoch();
     transaction(db, () => {
       for (const r of q.all.all(0)) if (synced(r.key)) q.deleteRow.run(r.key);
       db.exec('DELETE FROM kv_history');
       q.setMeta.run('pruned_rev', String(rev()));
       const at = now();
-      for (const [k, v] of entries) q.upsert.run(k, v, v.length, 0, 1, q.nextRev.get().rev, at, 'import');
+      for (const [k, v] of accepted) q.upsert.run(k, v, v.length, 0, 1, q.nextRev.get().rev, at, 'import');
+      q.setMeta.run('epoch', e); // with the data: never imported data under the old epoch
     });
-    return { keys: entries.length, epoch: resetEpoch() };
+    notifyEpoch(e);
+    return { keys: accepted.length, skipped, epoch: e };
   }
 
   /** Starts a new epoch (restore, import): browsers holding the old one re-hydrate. */
   function resetEpoch() {
     const e = newEpoch();
     q.setMeta.run('epoch', e);
+    notifyEpoch(e);
+    return e;
+  }
+
+  function notifyEpoch(e) {
     for (const fn of epochListeners) {
       try { fn(e); } catch (err) { log?.error('epoch listener failed', { error: err }); }
     }
-    return e;
   }
 
   /** Calls fn(epoch) after every resetEpoch(). Returns an unsubscribe function. */

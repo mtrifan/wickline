@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { openDatabase } from '../../storage/db.mjs';
-import { runBackup, listBackups, startBackupScheduler, holdServerLock, activeServerLock, inspectBackup, restoreDatabase, RestoreError } from '../../storage/backup.mjs';
+import { runBackup, listBackups, startBackupScheduler, holdServerLock, activeServerLock, inspectBackup, restoreDatabase, RestoreError, sweepTemporaryFiles } from '../../storage/backup.mjs';
 import { createSyncState } from '../../sync/state.mjs';
 
 function withDir(fn) {
@@ -27,7 +27,8 @@ test('runBackup writes a consistent copy and keeps only the newest N scheduled b
   db.close();
   const names = listBackups(dir).map((b) => b.name);
   assert.equal(names.length, 3);
-  assert.equal(names[0], 'wickline-20260101-000004.db');
+  assert.match(names[0], /^wickline-20260101-000004-[0-9a-f]{4}\.db$/, 'the same-second copy is the newest');
+  assert.equal(names[1], 'wickline-20260101-000004.db');
   assert.ok(readdirSync(path.join(dir, 'backups')).includes('pre-migrate-1-to-2-x.db'));
   const copy = new DatabaseSync(listBackups(dir)[0].file, { readOnly: true });
   assert.equal(copy.prepare("SELECT value FROM kv_state WHERE key = 'theme'").get().value, 'dark');
@@ -145,4 +146,73 @@ test('restore never brings back revoked credentials or a used TOTP code', () => 
   assert.equal(check.prepare("SELECT value FROM meta WHERE key = 'totp_last_counter'").get().value, '250');
   assert.equal(check.prepare("SELECT event FROM audit_log ORDER BY id DESC LIMIT 1").get().event, 'restore');
   check.close();
+}));
+
+test('with BACKUP_KEEP=1 a same-second backup keeps the one just written', () => withDir((dir) => {
+  const { db } = openDatabase(dir);
+  const when = new Date(Date.UTC(2026, 0, 1));
+  runBackup(db, dir, { keep: 1, now: when });
+  const second = runBackup(db, dir, { keep: 1, now: when });
+  db.close();
+  assert.deepEqual(listBackups(dir).map((b) => b.file), [second]);
+}));
+
+test('restore works over a corrupt live database and keeps its raw files', () => withDir((root) => {
+  const dir = path.join(root, 'data');
+  const { db } = openDatabase(dir);
+  const st = createSyncState(db);
+  st.write('watchlist', { value: '["GOOD"]', baseVersion: 0, epoch: st.epoch() });
+  const good = runBackup(db, dir);
+  db.close();
+  writeFileSync(path.join(dir, 'wickline.db'), 'garbage, not a database'.repeat(200));
+  const r = restoreDatabase(dir, good);
+  assert.match(r.saved, /pre-restore-\d{8}-\d{6}-raw\.db$/);
+  assert.match(readFileSync(r.saved, 'utf8'), /^garbage/);
+  assert.equal(r.tokensFromLive, false);
+  assert.deepEqual(keysOf(dir), { watchlist: '["GOOD"]' });
+}));
+
+test('restore folds the live WAL in before the swap and leaves no stale WAL next to the new file', () => withDir((root) => {
+  const dir = path.join(root, 'data');
+  const { db } = openDatabase(dir);
+  const st = createSyncState(db);
+  st.write('watchlist', { value: '["BACKUP"]', baseVersion: 0, epoch: st.epoch() });
+  const good = runBackup(db, dir);
+  st.write('watchlist', { value: '["IN-WAL"]', baseVersion: 1, epoch: st.epoch() }); // stays in the WAL
+  // simulate an unclean stop: copy the files while the connection still holds the WAL
+  const crashed = path.join(root, 'crashed');
+  mkdirSync(crashed);
+  for (const ext of ['', '-wal', '-shm']) if (existsSync(path.join(dir, 'wickline.db' + ext))) copyFileSync(path.join(dir, 'wickline.db' + ext), path.join(crashed, 'wickline.db' + ext));
+  db.close();
+  assert.ok(existsSync(path.join(crashed, 'wickline.db-wal')));
+  const r = restoreDatabase(crashed, good);
+  const saved = new DatabaseSync(r.saved, { readOnly: true });
+  assert.equal(saved.prepare("SELECT value FROM kv_state WHERE key = 'watchlist'").get().value, '["IN-WAL"]', 'the saved copy includes the WAL');
+  saved.close();
+  assert.deepEqual(readdirSync(crashed).filter((n) => /-wal$|-shm$|\.old-/.test(n)), []);
+  assert.deepEqual(keysOf(crashed), { watchlist: '["BACKUP"]' });
+}));
+
+test('startup sweeps temporary files from interrupted downloads and restores, but not fresh ones', () => withDir((dir) => {
+  mkdirSync(path.join(dir, 'backups'), { recursive: true });
+  const files = [path.join(dir, 'backups', '.download-abc123.db'), path.join(dir, 'wickline.db.restore-deadbeef'), path.join(dir, 'wickline.db.old-0011aabb-wal')];
+  for (const f of files) writeFileSync(f, 'x');
+  const keep = [path.join(dir, 'backups', '.download-fresh01.db'), path.join(dir, 'backups', 'wickline-20260101-000000.db'), path.join(dir, 'wickline.db')];
+  for (const f of keep) writeFileSync(f, 'x');
+  const old = new Date(Date.now() - 3600_000);
+  for (const f of [...files, keep[1], keep[2]]) utimesSync(f, old, old);
+  assert.deepEqual(sweepTemporaryFiles(dir).sort(), files.sort());
+  for (const f of keep) assert.ok(existsSync(f), f);
+}));
+
+test('import skips keys that are device-local on this server and writes the epoch with the data', () => withDir((dir) => {
+  const { db } = openDatabase(dir);
+  const st = createSyncState(db, { syncWorkspace: false });
+  let seen = null;
+  st.onEpoch((e) => { seen = { e, stored: db.prepare("SELECT value FROM meta WHERE key = 'epoch'").get().value, rows: st.exportKeys() }; });
+  const r = st.replaceAll({ workspace: '{"layout":1}', watchlist: '["X"]' });
+  assert.deepEqual(r.skipped, ['workspace']);
+  assert.equal(r.keys, 1);
+  assert.deepEqual(seen, { e: r.epoch, stored: r.epoch, rows: { watchlist: '["X"]' } }, 'listeners run after both are committed');
+  db.close();
 }));

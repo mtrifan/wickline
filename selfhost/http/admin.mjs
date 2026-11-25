@@ -18,10 +18,14 @@ export const EXPORT_FORMAT = { app: 'wickline-selfhost', format: 1 };
 const stamp = () => new Date().toISOString().replace(/[-:]/g, '').replace(/\..+/, '').replace('T', '-');
 
 export function createAdminRoutes({ state, db, dataDir, version, log }) {
+  let downloading = false; // one at a time: each holds a full copy of the database on disk
+
   function backup(req, res) {
+    if (downloading) return sendJson(res, 429, { error: 'A backup download is already in progress' }, { 'Retry-After': '10' });
+    downloading = true;
     const file = path.join(backupDir(dataDir), `.download-${randomBytes(6).toString('hex')}.db`);
-    backupTo(db, file);
-    const cleanup = () => rmSync(file, { force: true });
+    try { backupTo(db, file); } catch (e) { downloading = false; rmSync(file, { force: true }); throw e; }
+    const cleanup = () => { downloading = false; rmSync(file, { force: true }); };
     res.writeHead(200, {
       'Content-Type': 'application/vnd.sqlite3',
       'Content-Disposition': `attachment; filename="wickline-${stamp()}.db"`,

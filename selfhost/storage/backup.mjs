@@ -3,7 +3,7 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { backupTo, loadMigrations } from './db.mjs';
 
@@ -18,7 +18,8 @@ export function listBackups(dataDir) {
   if (!existsSync(dir)) return [];
   return readdirSync(dir).filter((n) => SCHEDULED.test(n))
     .map((name) => ({ name, file: path.join(dir, name), mtimeMs: statSync(path.join(dir, name)).mtimeMs }))
-    .sort((a, b) => b.name.localeCompare(a.name));
+    // Newest first. Without ".db", a same-second "-xxxx" copy (the newer one) sorts after the plain name.
+    .sort((a, b) => b.name.slice(0, -3).localeCompare(a.name.slice(0, -3)));
 }
 
 /** Writes backups/wickline-<time>.db and keeps the newest `keep`. Returns the new file. */
@@ -127,15 +128,24 @@ export function restoreDatabase(dataDir, file, { force = false, migrationsDir } 
   let saved = null;
   let current = null; // the live credentials: { tokens, totpCounter }
   if (existsSync(live)) {
-    const cur = new DatabaseSync(live);
+    // Best effort: a damaged live database is the main reason to restore, so failing to read it
+    // must not stop the restore. Its raw files are kept instead.
+    let cur = null;
     try {
+      cur = new DatabaseSync(live);
       saved = backupTo(cur, path.join(backupDir(dataDir), `pre-restore-${stamp()}.db`));
       const has = (t) => cur.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t);
       current = {
         tokens: has('api_tokens') ? cur.prepare('SELECT id, hash, label, created_at, last_used_at FROM api_tokens').all() : [],
         totpCounter: has('meta') ? Number(cur.prepare("SELECT value FROM meta WHERE key = 'totp_last_counter'").get()?.value ?? -1) : -1,
       };
-    } finally { cur.close(); }
+      cur.exec('PRAGMA wal_checkpoint(TRUNCATE)'); // fold the WAL into the file before it is replaced
+    } catch {
+      saved = path.join(backupDir(dataDir), `pre-restore-${stamp()}-raw.db`);
+      copyFileSync(live, saved);
+      for (const ext of ['-wal', '-shm']) if (existsSync(live + ext)) copyFileSync(live + ext, saved + ext);
+      current = null;
+    } finally { try { cur?.close(); } catch { /* damaged */ } }
   }
 
   // Copy through VACUUM INTO (a consistent single file, whatever WAL the backup had), set the new
@@ -169,7 +179,30 @@ export function restoreDatabase(dataDir, file, { force = false, migrationsDir } 
     throw e;
   }
   copy.close();
-  for (const ext of ['-wal', '-shm']) rmSync(live + ext, { force: true });
+  // Swap with no window: the old WAL and SHM move aside first (the WAL was checkpointed above, or
+  // its raw copy saved), then rename() replaces the main file atomically. A stale WAL is never left
+  // next to the new file, and some complete database is in place at every moment.
+  const aside = `${live}.old-${randomBytes(4).toString('hex')}`;
+  for (const ext of ['-wal', '-shm']) if (existsSync(live + ext)) renameSync(live + ext, aside + ext);
   renameSync(tmp, live);
+  for (const ext of ['-wal', '-shm']) rmSync(aside + ext, { force: true });
   return { version, saved, epoch: version >= 2 ? epoch : null, tokens, tokensFromLive: !!current };
+}
+
+/**
+ * Removes temporary files an interrupted backup download or restore left behind (older than
+ * `minAgeMs`, so a download in progress elsewhere is never touched). Called at server start.
+ */
+export function sweepTemporaryFiles(dataDir, { minAgeMs = 10 * 60_000, now = Date.now() } = {}) {
+  const removed = [];
+  const sweep = (dir, re) => {
+    if (!existsSync(dir)) return;
+    for (const n of readdirSync(dir)) {
+      const f = path.join(dir, n);
+      if (re.test(n) && now - statSync(f).mtimeMs > minAgeMs) { rmSync(f, { force: true }); removed.push(f); }
+    }
+  };
+  sweep(backupDir(dataDir), /^\.download-[0-9a-f]+\.db$/);
+  sweep(dataDir, /^wickline\.db\.(restore-[0-9a-f]+|old-[0-9a-f]+-(wal|shm))$/);
+  return removed;
 }

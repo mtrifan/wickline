@@ -78,7 +78,7 @@ test('import replaces everything, resets open streams, and validates its input',
 
   assert.equal((await importJson(ctx, { app: 'other', format: 1, keys: {} })).status, 422);
   assert.equal((await importJson(ctx, { app: 'wickline-selfhost', format: 2, keys: {} })).status, 422);
-  assert.equal((await importJson(ctx, { app: 'wickline-selfhost', format: 1, keys: { tdKey: '"secret"' } })).status, 422);
+  assert.equal((await importJson(ctx, { app: 'wickline-selfhost', format: 1, keys: { notAKey: '"x"' } })).status, 422);
   assert.equal((await importJson(ctx, { app: 'wickline-selfhost', format: 1, keys: { theme: 1 } })).status, 422);
   assert.equal((await importJson(ctx, { app: 'wickline-selfhost', format: 1, keys: [] })).status, 422);
   assert.equal((await importJson(ctx, '{nope')).status, 400);
@@ -143,4 +143,21 @@ test('BACKUP_INTERVAL_HOURS and BACKUP_KEEP are validated', () => {
   assert.throws(() => loadConfig({ WICKLINE_PASSWORD: PASSWORD, BACKUP_KEEP: '0' }), /BACKUP_KEEP/);
   const cfg = loadConfig({ WICKLINE_PASSWORD: PASSWORD, BACKUP_INTERVAL_HOURS: '0' });
   assert.deepEqual([cfg.backupIntervalHours, cfg.backupKeep], [0, 14]);
+});
+
+test('only one backup download runs at a time', async () => {
+  const ctx = await start();
+  await put(ctx, 'drawings.BIG', 'x'.repeat(4_000_000)); // large enough not to fit in socket buffers
+  // a slow client: reads the headers, then nothing
+  const slow = await new Promise((resolve) => {
+    const req = http.get(`${ctx.base}/api/selfhost/backup`, { headers: { cookie: ctx.cookie } }, (res) => { res.pause(); resolve({ req, res }); });
+  });
+  assert.equal(slow.res.statusCode, 200);
+  const second = await fetch(`${ctx.base}/api/selfhost/backup`, { headers: { cookie: ctx.cookie } });
+  assert.equal(second.status, 429);
+  slow.req.destroy();
+  await new Promise((r) => setTimeout(r, 100));
+  const third = await fetch(`${ctx.base}/api/selfhost/backup`, { headers: { cookie: ctx.cookie } });
+  assert.equal(third.status, 200);
+  await third.arrayBuffer();
 });

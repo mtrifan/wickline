@@ -24,7 +24,7 @@ import { createSyncState } from './sync/state.mjs';
 import { createEventHub } from './sync/events.mjs';
 import { createSyncRoutes } from './sync/routes.mjs';
 import { createAdminRoutes } from './http/admin.mjs';
-import { holdServerLock, startBackupScheduler } from './storage/backup.mjs';
+import { holdServerLock, startBackupScheduler, sweepTemporaryFiles } from './storage/backup.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const COOKIE = 'wl_session';
@@ -52,6 +52,8 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
 
   const { db, version: schema, migrated, backup } = openDatabase(cfg.dataDir, { log });
   const lock = holdServerLock(cfg.dataDir); // `cli.mjs restore` refuses while this is fresh
+  const swept = sweepTemporaryFiles(cfg.dataDir);
+  if (swept.length) log.info('removed temporary files left by an interrupted download or restore', { files: swept });
   const backups = startBackupScheduler({ db, dataDir: cfg.dataDir, intervalHours: cfg.backupIntervalHours, keep: cfg.backupKeep, log });
   const store = createAuthStore(db, { sessionDays: cfg.sessionDays });
   store.purgeExpired();
@@ -162,7 +164,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
 
     // A Bearer token is its own CSRF defence: browsers never attach one by themselves, and a
     // cross-site script cannot send one (the CORS preflight fails). Scripts need no Origin header.
-    const bearer = String(req.headers.authorization || '').startsWith('Bearer ');
+    const bearer = cfg.authMode === 'password' && cfg.allowApiTokens && String(req.headers.authorization || '').startsWith('Bearer ');
     if (!bearer && !sameOrigin(req, info)) return sendJson(res, 403, { error: 'Cross-origin request refused' });
 
     if (url.pathname === '/selfhost/login' && (req.method === 'GET' || req.method === 'POST')) return handleLogin(req, res, info);

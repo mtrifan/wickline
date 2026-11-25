@@ -143,7 +143,10 @@ node selfhost/cli.mjs totp-setup [label]     # new TOTP secret + otpauth:// URI
 node selfhost/cli.mjs token create <label>   # API token for scripts (shown once)
 node selfhost/cli.mjs token list | token revoke <id>
 node selfhost/cli.mjs sessions revoke-all    # sign out every browser
+node selfhost/cli.mjs backup                 # write a backup to /data/backups now
 ```
+
+`node selfhost/cli.mjs restore <file>` replaces the database with a backup. It runs with the container **stopped**; see [UPGRADE.md](UPGRADE.md#restore-a-backup).
 
 Use API tokens as `Authorization: Bearer wl_…`.
 

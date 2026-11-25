@@ -39,17 +39,20 @@ Back up the `/data` folder with your usual tools too; the backups live inside it
 1. Stop the container. The restore refuses to run while the server is up.
 2. Run the restore with the same image and data folder:
    `docker run --rm -v <appdata>:/data <image> node selfhost/cli.mjs restore /data/backups/wickline-<time>.db`
-   It checks the file's integrity and schema version, saves the current database as `/data/backups/pre-restore-<time>.db`, then swaps the backup in. Logins never go back in time: every browser signs in again, API tokens stay as they are now (a token revoked after the backup stays revoked), and used two-factor codes stay used.
+   It checks the file's integrity and schema version, saves the current database as `/data/backups/pre-restore-<time>.db`, then swaps the backup in. Logins never go back in time: every browser signs in again, API tokens are carried over from the database being replaced (a token revoked after the backup stays revoked), and used two-factor codes stay used. Restoring into an empty data folder keeps the backup's tokens instead.
+   If the current database is damaged, its raw file is kept as `pre-restore-<time>-raw.db` and the restore goes ahead.
 3. Start the container. Open browsers show "The server's data was restored or imported" and reload into it. A browser with changes newer than the backup offers them as a download.
 
 If the server stopped uncleanly, the restore may report it as running for up to 90 seconds. Wait, or add `--force` once you are sure it is stopped.
 
 ## Import a JSON export
 
-An import **replaces** all synced data with the file's contents; everything else (login, tokens) is unchanged. Every open browser reloads into the imported data. With an API token (`cli.mjs token create import`):
+An import **replaces** all synced data with the file's contents; everything else (login, tokens) is unchanged. Every open browser reloads into the imported data. Keys this server keeps on each device (the chart layout with `SYNC_WORKSPACE=false`) are skipped and listed in the response. With an API token (`cli.mjs token create import`):
 
 ```sh
 curl -X POST https://<your-host>/api/selfhost/import \
   -H "Authorization: Bearer <token>" -H "X-Wickline-Selfhost: 1" \
   -H "Content-Type: application/json" --data-binary @wickline-export-<time>.json
 ```
+
+The "Download previous data" file a browser offers after a restore is a record of that browser's old values (`"app": "wickline"`), not an export, so it cannot be imported.
