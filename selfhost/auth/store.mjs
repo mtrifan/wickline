@@ -17,6 +17,7 @@ export function createAuthStore(db, { sessionDays = 30, now = () => Date.now() }
     purge: db.prepare('DELETE FROM sessions WHERE expires_at < ?'),
     insertToken: db.prepare('INSERT INTO api_tokens (id, hash, label, created_at) VALUES (?, ?, ?, ?)'),
     tokenByHash: db.prepare('SELECT id, label, last_used_at FROM api_tokens WHERE hash = ?'),
+    tokenById: db.prepare('SELECT 1 AS ok FROM api_tokens WHERE id = ?'),
     useToken: db.prepare('UPDATE api_tokens SET last_used_at = ? WHERE id = ?'),
     listTokens: db.prepare('SELECT id, label, created_at, last_used_at FROM api_tokens ORDER BY created_at'),
     deleteToken: db.prepare('DELETE FROM api_tokens WHERE id = ?'),
@@ -45,6 +46,12 @@ export function createAuthStore(db, { sessionDays = 30, now = () => Date.now() }
       if (t - s.last_seen_at > HOUR) q.touchSession.run(t, t + ttl, id);
       return { id, expiresAt: Math.max(s.expires_at, t - s.last_seen_at > HOUR ? t + ttl : s.expires_at) };
     },
+    /** Whether a session is still valid, without sliding its expiry (for long-lived streams). */
+    isSessionValid(token) {
+      if (!token || token.length > 200) return false;
+      const s = q.getSession.get(sha256(token));
+      return !!s && s.expires_at > now();
+    },
     deleteSession(token) { if (token) q.deleteSession.run(sha256(token)); },
     deleteAllSessions() { q.deleteAllSessions.run(); },
     purgeExpired() { q.purge.run(now()); q.auditTrim.run(now() - 180 * 24 * HOUR); },
@@ -66,6 +73,8 @@ export function createAuthStore(db, { sessionDays = 30, now = () => Date.now() }
     },
     listTokens: () => q.listTokens.all(),
     deleteToken: (id) => q.deleteToken.run(id).changes > 0,
+    /** Whether an API token (by id) still exists, without recording a use. */
+    isTokenValid: (id) => !!q.tokenById.get(id),
 
     /** Highest TOTP counter accepted so far (replay protection across restarts). */
     getTotpCounter: () => Number(q.getMeta.get('totp_last_counter')?.value ?? -1),

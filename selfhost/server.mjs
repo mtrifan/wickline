@@ -18,6 +18,9 @@ import { createLoginLimiter } from './auth/rate-limit.mjs';
 import { clientInfo, parseCookies, serializeCookie, readForm, sameOrigin, safeNext, HttpError } from './http/request.mjs';
 import { stripCors, securityHeaders, sendJson, sendHtml, redirect } from './http/headers.mjs';
 import { loginPage } from './http/pages.mjs';
+import { createSyncState } from './sync/state.mjs';
+import { createEventHub } from './sync/events.mjs';
+import { createSyncRoutes } from './sync/routes.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const COOKIE = 'wl_session';
@@ -47,6 +50,17 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   const store = createAuthStore(db, { sessionDays: cfg.sessionDays });
   store.purgeExpired();
   const purgeTimer = setInterval(() => store.purgeExpired(), 3600_000).unref();
+  const sync = createSyncState(db, { syncWorkspace: cfg.syncWorkspace, log });
+  const hub = createEventHub(sync);
+  const handleSync = createSyncRoutes({
+    state: sync,
+    hub,
+    isValid: (auth) => {
+      if (auth?.kind === 'session') return () => store.isSessionValid(auth.token);
+      if (auth?.kind === 'token') return () => cfg.allowApiTokens && store.isTokenValid(auth.id);
+      return () => cfg.authMode === 'none';
+    },
+  });
 
   const passwordHash = cfg.authMode === 'password' ? (cfg.passwordHash || hashPassword(cfg.password)) : null;
   const limiter = createLoginLimiter({ globalSpacingMs: cfg.exposure === 'public' ? 1000 : 0 });
@@ -111,7 +125,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   }
 
   function handleLogout(req, res, info, auth) {
-    if (auth?.kind === 'session') store.deleteSession(auth.token);
+    if (auth?.kind === 'session') { store.deleteSession(auth.token); hub.dropSession(auth.token); }
     store.audit('logout', { ip: info.ip });
     return redirect(res, '/selfhost/login', { 'Set-Cookie': serializeCookie(COOKIE, '', { maxAgeSec: 0, secure: cookieSecure(info) }) });
   }
@@ -155,6 +169,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     if (route === 'GET /api/selfhost/session') {
       return sendJson(res, 200, { authenticated: true, via: auth.kind, exposure: cfg.exposure, totp: !!cfg.totpSecret, version: VERSION, schema });
     }
+    if (url.pathname.startsWith('/api/selfhost/') && (await handleSync(req, res, url, auth)) !== false) return undefined;
     if (url.pathname.startsWith('/api/selfhost/') || url.pathname.startsWith('/selfhost/')) return sendJson(res, 404, { error: 'Not found' });
 
     // Upstream's app and API (GET only upstream; it answers 405 to anything else).
@@ -186,6 +201,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     state.shuttingDown = true;
     closing = (async () => {
       const done = new Promise((r) => server.close(() => r()));
+      hub.close();
       // Long-lived streams (SSE) never end on their own.
       server.closeIdleConnections();
       setTimeout(() => server.closeAllConnections(), 1000).unref();
@@ -198,7 +214,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     return closing;
   }
 
-  return { server, port, close, state, db, store };
+  return { server, port, close, state, db, store, sync, hub };
 }
 
 // ---------------------------------------------------------------------------------------------
