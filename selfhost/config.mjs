@@ -31,8 +31,10 @@ function httpUrl(env, name, problems) {
   const raw = (env[name] || '').trim();
   if (!raw) return '';
   let u;
-  try { u = new URL(raw); } catch { problems.push(`${name} must be an absolute URL such as https://host (got "${raw}")`); return ''; }
+  // Values are never echoed in errors: a URL can carry credentials.
+  try { u = new URL(raw); } catch { problems.push(`${name} must be an absolute URL such as https://host`); return ''; }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') { problems.push(`${name} must start with http:// or https://`); return ''; }
+  if (u.username || u.password) { problems.push(`${name} must not contain a user name or password (the URL is logged at startup; Gotify uses GOTIFY_TOKEN)`); return ''; }
   if (u.search || u.hash) { problems.push(`${name} must not have a query or fragment`); return ''; }
   return u.href.replace(/\/+$/, '');
 }

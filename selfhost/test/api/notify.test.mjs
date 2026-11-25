@@ -80,6 +80,8 @@ test('notification settings are validated, the token can come from a file, and i
   assert.throws(() => loadConfig({ ...base, GOTIFY_URL: 'gotify.lan', GOTIFY_TOKEN: 'x' }), /GOTIFY_URL must be an absolute URL/);
   assert.throws(() => loadConfig({ ...base, GOTIFY_URL: 'ftp://gotify.lan', GOTIFY_TOKEN: 'x' }), /http:\/\/ or https:\/\//);
   assert.throws(() => loadConfig({ ...base, PUBLIC_URL: 'https://wl.example/?x=1' }), /PUBLIC_URL must not have a query/);
+  assert.throws(() => loadConfig({ ...base, GOTIFY_URL: 'https://admin:hunter2@gotify.lan', GOTIFY_TOKEN: 'x' }), (e) => /user name or password/.test(e.message) && !/hunter2/.test(e.message));
+  assert.throws(() => loadConfig({ ...base, GOTIFY_URL: 'not a url hunter2', GOTIFY_TOKEN: 'x' }), (e) => !/hunter2/.test(e.message), 'invalid values are not echoed');
   assert.throws(() => loadConfig({ ...base, GOTIFY_PRIORITY: '11' }), /GOTIFY_PRIORITY/);
   assert.throws(() => loadConfig({ ...base, NOTIFY_MAX_ATTEMPTS: '0' }), /NOTIFY_MAX_ATTEMPTS/);
   const dir = mkdtempSync(path.join(tmpdir(), 'wl-cfg-'));
