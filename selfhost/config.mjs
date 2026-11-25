@@ -74,6 +74,7 @@ export function loadConfig(env = process.env, { readFile = readFileSync } = {}) 
     shutdownTimeoutMs: int(env, 'SHUTDOWN_TIMEOUT_MS', 10000, { min: 1000, max: 120000 }, problems),
     logLevel: (env.LOG_LEVEL || 'info').toLowerCase(),
     testMode: bool(env.SELFHOST_TEST_MODE),
+    syncWorkspace: bool(env.SYNC_WORKSPACE, true),
   };
 
   if (!['debug', 'info', 'warn', 'error'].includes(cfg.logLevel)) problems.push('LOG_LEVEL must be debug, info, warn or error');
