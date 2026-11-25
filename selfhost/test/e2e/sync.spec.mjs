@@ -277,3 +277,34 @@ test('alerts added on two devices at once are both kept', async ({ browser }) =>
   expect(server).toEqual(expect.arrayContaining([idA, idB]));
   await a.ctx.close(); await b.ctx.close();
 });
+
+test('restore epoch: after an import, open devices must reload into the imported state', async ({ browser }) => {
+  const a = await device(browser);
+  const b = await device(browser);
+  await settled(a.page); await settled(b.page);
+  const restored = JSON.stringify(['RESTORED', `T${Date.now()}`]);
+  await setItem(a.page, 'wickline.watchlist', restored);
+  await settled(a.page);
+  const exported = await a.page.evaluate(() => fetch('/api/selfhost/export').then((r) => r.json()));
+  const later = JSON.stringify(['LATER', `T${Date.now()}`]);
+  await setItem(a.page, 'wickline.watchlist', later);
+  await settled(a.page);
+
+  const status = await a.page.evaluate((body) => fetch('/api/selfhost/import', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Wickline-Selfhost': '1' }, body: JSON.stringify(body),
+  }).then((r) => r.status), exported);
+  expect(status).toBe(200);
+
+  for (const page of [a.page, b.page]) {
+    const banner = page.locator('#wl-sync-banner');
+    await expect(banner).toHaveAttribute('data-kind', 'restored', { timeout: 5_000 });
+    await expect(banner.getByRole('button', { name: 'Dismiss' })).toHaveCount(0);
+  }
+  // A's later list is gone from the server; reloading shows the imported state and offers A's copy
+  await a.page.locator('#wl-sync-banner').getByRole('button', { name: 'Reload' }).click();
+  await expect.poll(() => getItem(a.page, 'wickline.watchlist')).toBe(restored);
+  await expect(a.page.locator('#wl-sync-banner')).toHaveAttribute('data-kind', 'previous');
+  await waitLeader(a.page);
+  expect((await serverState(a.page)).keys.watchlist.v).toBe(restored);
+  await a.ctx.close(); await b.ctx.close();
+});

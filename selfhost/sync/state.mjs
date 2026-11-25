@@ -167,6 +167,39 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
     return result;
   }
 
+  /** Every live synced value: { key: value } (the portable export; deletions are not exported). */
+  function exportKeys() {
+    const keys = {};
+    for (const c of changesSince(0)) if (!c.deleted) keys[c.key] = c.v;
+    return keys;
+  }
+
+  /**
+   * Replaces all synced state with `keys` ({ key: value }) and starts a new epoch, so every browser
+   * re-hydrates from it. Rows of keys that do not sync (a workspace kept with SYNC_WORKSPACE=false)
+   * are left alone. Throws SyncError 422 for an invalid or unsynced key, 413 beyond the quota.
+   */
+  function replaceAll(keys) {
+    if (!keys || typeof keys !== 'object' || Array.isArray(keys)) throw new SyncError(422, { error: 'keys must be an object' });
+    const entries = Object.entries(keys);
+    let chars = 0;
+    for (const [k, v] of entries) {
+      if (!synced(k)) throw new SyncError(422, { error: `Not a synced key: ${String(k).slice(0, 80)}` });
+      if (typeof v !== 'string') throw new SyncError(422, { error: `The value of ${k} must be a string` });
+      if (v.length > MAX_VALUE_CHARS) throw new SyncError(413, { error: `The value of ${k} is too large` });
+      chars += v.length;
+    }
+    if (chars > maxTotalChars || entries.length > maxKeys) throw new SyncError(413, { error: 'Synced state quota exceeded' });
+    transaction(db, () => {
+      for (const r of q.all.all(0)) if (synced(r.key)) q.deleteRow.run(r.key);
+      db.exec('DELETE FROM kv_history');
+      q.setMeta.run('pruned_rev', String(rev()));
+      const at = now();
+      for (const [k, v] of entries) q.upsert.run(k, v, v.length, 0, 1, q.nextRev.get().rev, at, 'import');
+    });
+    return { keys: entries.length, epoch: resetEpoch() };
+  }
+
   /** Starts a new epoch (restore, import): browsers holding the old one re-hydrate. */
   function resetEpoch() {
     const e = newEpoch();
@@ -183,5 +216,5 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
   /** Calls fn(change) after every committed change. Returns an unsubscribe function. */
   function onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
-  return { epoch, rev, prunedRev, snapshot, write, changesSince, resetEpoch, onChange, onEpoch, policyFor: (k) => policyFor(k, opts) };
+  return { epoch, rev, prunedRev, snapshot, write, changesSince, exportKeys, replaceAll, resetEpoch, onChange, onEpoch, policyFor: (k) => policyFor(k, opts) };
 }
