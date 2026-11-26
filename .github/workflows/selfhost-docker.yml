@@ -1,6 +1,7 @@
 # Container image: every PR builds it and runs the smoke test (hardened run, health, login,
 # graceful stop, restart persistence). Pushes to the production branch publish multi-arch images
-# to GHCR as :edge and :sha-<short>. Release tags (:<upstream>-sh.<rev>, :stable) come in Phase 4.
+# to GHCR as :edge and :sha-<short>. Release tags are published by selfhost-release, which also calls
+# this workflow for the smoke test (publish stays off then: it runs only for pushes to the branch).
 name: selfhost-docker
 
 on:
@@ -8,6 +9,7 @@ on:
   push:
     branches: [selfhosted]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -76,6 +78,7 @@ jobs:
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ env.IMAGE }}
+          flavor: latest=false # :latest moves only through an approved release
           tags: |
             type=raw,value=edge
             type=sha,prefix=sha-,format=short
