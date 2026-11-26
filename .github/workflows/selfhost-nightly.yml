@@ -1,0 +1,59 @@
+# Nightly regression (PLAN §6): the browser suite on Chromium, WebKit and Firefox, and upstream's own
+# desktop end-to-end test (Electron, live market data, so it needs the internet and is non-blocking).
+# No secrets and a read-only token: upstream code runs here (ADR-014).
+name: selfhost-nightly
+
+on:
+  schedule:
+    - cron: '41 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: selfhost-nightly
+  cancel-in-progress: true
+
+jobs:
+  browsers:
+    name: browser tests (chromium, webkit, firefox)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: selfhost
+      - run: npx playwright install --with-deps chromium webkit firefox
+        working-directory: selfhost
+      - run: npx playwright test
+        working-directory: selfhost
+        env:
+          E2E_FIREFOX: '1'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: nightly-playwright-traces
+          path: selfhost/test-results/
+          retention-days: 7
+
+  desktop:
+    name: upstream desktop e2e (non-blocking, live data)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund # with install scripts: Electron downloads its binary
+      - run: npm test
+      - run: xvfb-run -a npm run test:e2e
