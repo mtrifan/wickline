@@ -1,6 +1,6 @@
 # Upgrading, rolling back, backup and restore
 
-> Backup, restore and migrations work today. Release tags and the upgrade flow arrive with the first release (Phase 4; see [the plan](selfhost/docs/PLAN.md) §5.4).
+> The upgrade and rollback steps below are exercised on every pull request by `selfhost/test/docker/upgrade.sh`. It runs a release, upgrades it with an image that adds a schema migration, checks that a downgrade is refused, then rolls back with the pre-migration backup.
 
 ## Image tags
 
@@ -11,19 +11,23 @@
 | `stable` / `latest` | Newest validated and approved release | You want automatic upgrades |
 | `edge` | Every change on the production branch | Testing only |
 
-## Upgrade (planned)
+## Upgrade
 
 1. Read `CHANGELOG-SELFHOSTED.md` for the target release.
 2. Pull the new tag and recreate the container. Data in `/data` is kept.
 3. On start, any database migration runs automatically. A backup is written first: `/data/backups/pre-migrate-<from>-<to>-<time>.db`.
 
-## Roll back (planned)
+On Unraid: edit the container, set the image tag (for example `ghcr.io/mtrifan/wickline:0.1.9-sh.2`, or keep `:stable` and use **Force update**), and apply.
+
+## Roll back
 
 1. Stop the container.
 2. Pin the previous immutable tag.
-3. If the newer version migrated the database, the older version refuses to start and says so. Restore the pre-migration backup:
+3. If the newer version migrated the database, the older version refuses to start (exit code 78) and says so. Restore the pre-migration backup:
    `docker run --rm -v <appdata>:/data <image:previous-tag> node selfhost/cli.mjs restore /data/backups/pre-migrate-….db`
-4. Start the container. Open browsers show "The server's data was restored or imported" and reload into it.
+4. Start the container. Open browsers show "The server's data was restored or imported" and reload into it. Everyone signs in again; API tokens keep working.
+
+Data written after the upgrade is not in the pre-migration backup. Export it first (`/api/selfhost/export`) if you need it, and import it after the rollback if the older version understands it.
 
 ## Backup
 
