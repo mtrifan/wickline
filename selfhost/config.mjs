@@ -103,6 +103,8 @@ export function loadConfig(env = process.env, { readFile = readFileSync } = {}) 
     alertClosedPollSec: int(env, 'ALERT_CLOSED_POLL_INTERVAL', 900, { min: 60, max: 86400 }, problems),
     alertStaleAfterMin: env.ALERT_STALE_AFTER ? int(env, 'ALERT_STALE_AFTER', 10, { min: 1, max: 1440 }, problems) : null,
     notifyStale: bool(env.NOTIFY_STALE, false),
+    paperServer: bool(env.PAPER_SERVER, true),
+    notifyPaper: bool(env.NOTIFY_PAPER, true),
   };
 
   if (!['debug', 'info', 'warn', 'error'].includes(cfg.logLevel)) problems.push('LOG_LEVEL must be debug, info, warn or error');

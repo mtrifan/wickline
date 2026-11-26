@@ -30,6 +30,8 @@ import { createGotify } from './notify/gotify.mjs';
 import { createOutbox } from './notify/outbox.mjs';
 import { createAlertLedger } from './alerts/ledger.mjs';
 import { createAlertSupervisor } from './alerts/supervisor.mjs';
+import { createPresence } from './paper/presence.mjs';
+import { createPaperEvaluator } from './paper/evaluator.mjs';
 import { holdServerLock, startBackupScheduler, sweepTemporaryFiles, DataDirInUseError } from './storage/backup.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -108,7 +110,8 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   // per-process credential that never leaves this process. A reverse proxy forwards to the public
   // port only, so this listener is not reachable from outside the host.
   const internalHex = randomBytes(32).toString('hex');
-  const internalServer = cfg.alertsServer ? http.createServer(async (req, res) => {
+  const workerNeeded = cfg.alertsServer || cfg.paperServer;
+  const internalServer = workerNeeded ? http.createServer(async (req, res) => {
     try {
       stripCors(res);
       let url;
@@ -223,6 +226,9 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
       return sendJson(res, 200, { authenticated: true, via: auth.kind, exposure: cfg.exposure, totp: !!cfg.totpSecret, version: VERSION, schema });
     }
     if ((req.method === 'GET' || req.method === 'HEAD') && isIndexPath(url.pathname)) {
+      // A main window's page (not HEAD, not a pop-out) takes the paper account back from the server
+      // before its snapshot is built, so it starts from the latest account.
+      if (req.method === 'GET' && url.searchParams.get('popout') !== '1') { presence.touch(); paper?.handover(); }
       const html = injectBoot(indexHtml, { ...sync.snapshot(), sync: keyConfig });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Length': Buffer.byteLength(html) });
       return res.end(req.method === 'HEAD' ? undefined : html);
@@ -234,9 +240,15 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     if (url.pathname.startsWith('/api/selfhost/') && (await handleSync(req, res, url, auth)) !== false) return undefined;
     if (url.pathname.startsWith('/api/selfhost/') && (await handleAdmin(req, res, url)) !== false) return undefined;
     if (url.pathname.startsWith('/api/selfhost/notify/') && (await handleNotify(req, res, url)) !== false) return undefined;
+    if (url.pathname === '/api/selfhost/presence') {
+      if (req.method !== 'POST') return sendJson(res, 405, { error: 'Method not allowed' }, { Allow: 'POST' });
+      presence.touch();
+      paper?.handover();
+      return sendJson(res, 200, { ok: true });
+    }
     if (url.pathname === '/api/selfhost/alerts/status') {
       if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, { Allow: 'GET' });
-      return sendJson(res, 200, supervisor ? { enabled: true, ...supervisor.status() } : { enabled: false });
+      return sendJson(res, 200, { ...(supervisor ? { enabled: cfg.alertsServer, ...supervisor.status() } : { enabled: false }), paper: paper ? paper.status() : { enabled: false } });
     }
     if (url.pathname.startsWith('/api/selfhost/') || url.pathname.startsWith('/selfhost/')) return sendJson(res, 404, { error: 'Not found' });
 
@@ -275,7 +287,13 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     }
   }
   // Server-side alerts (PLAN §2.5): a worker thread reads upstream's Yahoo relay over loopback.
-  const supervisor = cfg.alertsServer ? createAlertSupervisor({
+  // Server-side paper trading (selfhost/docs/PHASE5-PAPER.md): the server fills the live paper account
+  // only while no main window reports presence. Best effort by design.
+  const presence = createPresence();
+  const paper = cfg.paperServer ? createPaperEvaluator({ sync, db, outbox, presence, publicUrl: cfg.publicUrl, notify: cfg.notifyPaper, log }) : null;
+  const paperTimer = paper ? setInterval(() => { try { paper.tick(); } catch (e) { log.error('paper ownership check failed', { error: e }); } }, 5_000) : null;
+  paperTimer?.unref();
+  const supervisor = workerNeeded ? createAlertSupervisor({
     ledger: alerts,
     sync,
     log,
@@ -293,6 +311,8 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
         : { crypto: 5 * 60_000, equity: 10 * 60_000 },
     },
     notifyStale: cfg.notifyStale,
+    alerts: cfg.alertsServer,
+    paper,
   }) : null;
   supervisor?.start();
   state.ready = true;
@@ -308,6 +328,8 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
       hub.close();
       backups.stop();
       // Stores the latest prices for resuming, then closes the worker's listener.
+      clearInterval(paperTimer);
+      try { paper?.handover(); paper?.close(); } catch (e) { log.error('paper shutdown failed', { error: e }); } // saves moved marks
       const workerStopped = supervisor ? supervisor.stop().then(() => new Promise((r) => { internalServer.closeAllConnections(); internalServer.close(() => r()); })) : null;
       const drained = outbox.stop(); // a send in flight gets up to 5 s
       // Long-lived streams (SSE) never end on their own.

@@ -141,7 +141,7 @@ test('the Yahoo source shards by 100, sends the credential, and reconnects after
 });
 
 test('the supervisor replaces a worker that stops sending heartbeats', async () => {
-  const sync = { snapshot: () => ({ keys: {} }), onChange: () => () => {} };
+  const sync = { snapshot: () => ({ keys: {} }), get: () => ({ value: null, version: 0, deleted: true }), onChange: () => () => {} };
   const ledger = { resumePoints: () => ({}), trigger: () => ({ fired: false }), saveProgress() {} };
   const silent = new URL('data:text/javascript,setInterval(() => {}, 1000)');
   const sup = createAlertSupervisor({ ledger, sync, workerData: {}, workerUrl: silent, heartbeatTimeoutMs: 200 });
@@ -153,7 +153,7 @@ test('the supervisor replaces a worker that stops sending heartbeats', async () 
 
 test('a failed trigger write gives the worker the stored alerts back, so the alert stays armed', async () => {
   const items = [alert()];
-  const sync = { snapshot: () => ({ keys: { alerts: { v: JSON.stringify(items), deleted: false } } }), onChange: () => () => {} };
+  const sync = { snapshot: () => ({ keys: { alerts: { v: JSON.stringify(items), deleted: false } } }), get: () => ({ value: JSON.stringify(items), version: 1, deleted: false }), onChange: () => () => {} };
   const ledger = { resumePoints: () => ({}), trigger: () => { throw new Error('disk full'); }, saveProgress() {} };
   // Reports each alerts message back as a log line, and fires one trigger after the first.
   const src = "import { parentPort } from 'node:worker_threads'; let n = 0;"
@@ -171,7 +171,7 @@ test('a failed trigger write gives the worker the stored alerts back, so the ale
 });
 
 test('the supervisor restarts a worker that exits, with backoff', async () => {
-  const sync = { snapshot: () => ({ keys: {} }), onChange: () => () => {} };
+  const sync = { snapshot: () => ({ keys: {} }), get: () => ({ value: null, version: 0, deleted: true }), onChange: () => () => {} };
   const ledger = { resumePoints: () => ({}), trigger: () => ({ fired: false }), saveProgress() {} };
   const crashing = new URL('data:text/javascript,process.exit(3)');
   const sup = createAlertSupervisor({ ledger, sync, workerData: {}, workerUrl: crashing });

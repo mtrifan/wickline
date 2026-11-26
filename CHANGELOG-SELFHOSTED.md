@@ -6,6 +6,10 @@ Release tags: `sh-v<upstream version>-<revision>`. Image tags: `<upstream versio
 
 ## Unreleased
 
+### Added
+- Server-side paper trading (best effort): while no Wickline window is open, the server fills the live paper account's limit and stop orders, stop losses and take profits on streamed prices with upstream's own engine, and pushes each fill or rejection (`PAPER_SERVER`, `NOTIFY_PAPER`). Opening Wickline hands the account back first. Limits are documented in SELFHOSTED.md.
+- Event streams proxied from upstream send `X-Accel-Buffering: no`, so nginx-based reverse proxies do not buffer live prices.
+
 ## sh-v0.1.11-1 — 2026-11-26
 
 Images: `ghcr.io/mtrifan/wickline:0.1.11-sh.1` (immutable), `:0.1.11`, and `:stable` / `:latest` after approval. No database change: upgrading from 0.1.9-sh.1 needs no migration.

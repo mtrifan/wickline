@@ -12,7 +12,7 @@ const MAX_RESTART_MS = 60_000;
 const STABLE_MS = 60_000; // a worker that ran this long resets the backoff
 const FLUSH_TIMEOUT_MS = 2_000;
 
-export function createAlertSupervisor({ ledger, sync, workerData, log, notifyStale = false, workerUrl = WORKER_URL, now = Date.now, heartbeatTimeoutMs = HEARTBEAT_TIMEOUT_MS }) {
+export function createAlertSupervisor({ ledger, sync, workerData, log, notifyStale = false, alerts = true, paper = null, workerUrl = WORKER_URL, now = Date.now, heartbeatTimeoutMs = HEARTBEAT_TIMEOUT_MS }) {
   let worker = null;
   let stopped = true;
   let restarts = 0;
@@ -27,10 +27,13 @@ export function createAlertSupervisor({ ledger, sync, workerData, log, notifySta
   let unsubscribe = null;
   let flushed = null;
 
+  // ALERTS_SERVER=false with PAPER_SERVER=true: the worker runs for paper prices, with no alerts.
   const currentAlerts = () => {
-    const k = sync.snapshot().keys.alerts;
-    return parseIdArray(k && !k.deleted ? k.v : null) || [];
+    if (!alerts) return [];
+    const k = sync.get('alerts');
+    return parseIdArray(k.value) || [];
   };
+  let offPaper = null;
 
   function onMessage(msg) {
     try {
@@ -51,6 +54,7 @@ export function createAlertSupervisor({ ledger, sync, workerData, log, notifySta
           break;
         }
         case 'progress': ledger.saveProgress(msg.points); break;
+        case 'price': paper?.price(msg); break;
         case 'stale':
           log?.warn('no prices for a symbol while its market is open; its alerts cannot fire until prices return', { symbol: msg.symbol });
           if (notifyStale) ledger.staleNotice(msg.symbol, msg.since);
@@ -84,6 +88,7 @@ export function createAlertSupervisor({ ledger, sync, workerData, log, notifySta
       scheduleRestart();
     });
     w.postMessage({ type: 'alerts', items: currentAlerts(), resume: ledger.resumePoints() });
+    if (paper) w.postMessage({ type: 'paperSymbols', symbols: paper.symbols() });
   }
 
   function scheduleRestart() {
@@ -100,8 +105,9 @@ export function createAlertSupervisor({ ledger, sync, workerData, log, notifySta
   function start() {
     if (!stopped) return;
     stopped = false;
+    if (paper) offPaper = paper.onSymbols((symbols) => worker?.postMessage({ type: 'paperSymbols', symbols }));
     unsubscribe = sync.onChange((c) => {
-      if (c.key !== 'alerts' || !worker) return;
+      if (!alerts || c.key !== 'alerts' || !worker) return;
       worker.postMessage({ type: 'alerts', items: c.deleted ? [] : parseIdArray(c.v) || [] });
     });
     // A worker that stops sending heartbeats is stuck (a busy loop): replace it.
@@ -126,6 +132,7 @@ export function createAlertSupervisor({ ledger, sync, workerData, log, notifySta
     clearTimeout(restartTimer);
     clearInterval(watchdog);
     unsubscribe?.();
+    offPaper?.();
     const w = worker;
     worker = null;
     if (!w) return;

@@ -94,6 +94,8 @@ Everything is set through environment variables. Each secret also accepts `<NAME
 | `ALERT_POLL_INTERVAL` | `30` | Seconds between fallback price requests for a symbol whose live stream has gone quiet while its market is open (minimum 10). |
 | `ALERT_CLOSED_POLL_INTERVAL` | `900` | Seconds between checks of whether a closed market has reopened. |
 | `ALERT_STALE_AFTER` | 5 crypto, 10 others | Minutes without a live price, while the market is open, before the fallback starts. Setting it applies one value to every symbol. |
+| `PAPER_SERVER` | `true` | Fill the live paper account's limit and stop orders, stop losses and take profits on the server while no Wickline window is open (best effort; see [Paper trading](#paper-trading)). |
+| `NOTIFY_PAPER` | `true` | Push a notification for each paper fill or rejection the server makes. |
 | `NOTIFY_STALE` | `false` | Also send a notification when a symbol gets no prices at all (stream and fallback) while its market is open. One per episode. |
 | `WICKLINE_PROXY` | none | Outbound HTTP or SOCKS5 proxy for market data (also `HTTPS_PROXY`, `ALL_PROXY`). |
 | `PORT`, `HOST`, `DATA_DIR` | `5173`, `0.0.0.0`, `/data` | Listener and data location. |
@@ -188,6 +190,25 @@ The server also checks alerts itself, with no browser open, using the same live 
 Crypto markets are always open. When Binance answers "too many requests", the fallback waits as long as Binance asks. Connections to the exchanges go through `WICKLINE_PROXY` when it is set.
 
 Like an app tab left open overnight, the checker compares the first regular-session price of the day with the previous close, so a level crossed between the close and the open fires at the open. If the checker stops, it is restarted automatically; `/api/health/ready` reports only the web server and database, so the checker restarting never marks the container unhealthy.
+
+## Paper trading
+
+Your paper account (cash, positions, orders, history, settings) is stored on the server and shared by all your devices, like the rest of your data, and it is in every backup.
+
+**While a Wickline window is open**, the app fills paper orders itself, exactly as upstream does.
+
+**While no window is open** (every tab closed, or the phone asleep), the server takes over after 2.5 minutes:
+- it fills limit and stop orders, stop losses and take profits at upstream's rules, using live streamed prices;
+- each fill or rejection is pushed ("AAPL stop loss filled at 189.50");
+- when you open Wickline again, the server stops first and the app starts from the account as it is now, including what filled while you were away.
+
+Each open main window tells the server it is there every 30 seconds; pop-out windows do not fill orders and do not count. `/api/selfhost/alerts/status` shows who fills now (`paper.owner`), the watched symbols, and the last server fill. `PAPER_SERVER=false` turns this off.
+
+This is **best effort**. Upstream's app fills and saves on its own, and the fork does not change upstream's code, so a few edge cases remain:
+- For up to 2.5 minutes after the last window closes or the device sleeps, nobody fills. A price that crosses your level and comes back in that time is missed. So is any move while the server was down or the price stream was out.
+- A tab that wakes after the server took over may act briefly on its old copy. Usually it then shows "Your change on this device was replaced by a newer one" and reloads. A change made in the split second before an update arrives can be lost without a notice.
+- A change that never reached the server, such as cancelling an order just before closing the tab on a bad connection, is not known to the server, which can still fill that order.
+- Server fills use streamed prices only, not the REST fallback, which can be delayed. A symbol whose stream is quiet is not filled until prices return.
 
 ## Security model
 

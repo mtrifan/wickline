@@ -61,6 +61,37 @@ test('crypto feeds: Binance miniTicker streams and the Coinbase ticker feed', ()
   assert.match(src, /const COINBASE_WS = 'wss:\/\/ws-feed\.exchange\.coinbase\.com'/, point('crypto-feeds'));
 });
 
+test('PaperAccount behaves as the server-side paper evaluator relies on', async () => {
+  const { PaperAccount } = await importUpstream('public/js/paper.js');
+  const P = point('paper-engine');
+  const a = new PaperAccount({ balance: 1_000_000 });
+  a.tick('X', 100, 1);
+  a.placeOrder({ symbol: 'X', side: 'buy', type: 'limit', qty: 1, price: 95, tp: 120 }, { price: 100, time: 1 });
+  a.placeOrder({ symbol: 'X', side: 'buy', type: 'limit', qty: 1, price: 93 }, { price: 100, time: 1 });
+  assert.equal(a.hasWork('X'), true, `${P} hasWork`);
+  // One price can produce several results; times are the seconds passed in.
+  const res = a.tick('X', 92, 3);
+  assert.equal(res.length, 2, `${P} several results from one price`);
+  assert.deepEqual(Object.keys(res[0]).sort(), ['commission', 'id', 'orderId', 'price', 'qty', 'reason', 'side', 'symbol', 'time'], `${P} fill shape`);
+  assert.equal(res[0].time, 3, `${P} times are the seconds passed in`);
+  assert.equal(res[0].reason, 'Limit', `${P} fill reason`);
+  assert.equal(a.tick('X', 125, 4).at(-1).reason, 'Take profit', `${P} bracket exit reason`);
+  // A fill that buying power no longer covers is a rejection: no id, the order removed.
+  const b = new PaperAccount({ balance: 1_000 });
+  b.tick('Y', 10, 1);
+  b.placeOrder({ symbol: 'Y', side: 'buy', type: 'limit', qty: 90, price: 9 }, { price: 10, time: 1 });
+  b.cash = 10;
+  const [rej] = b.tick('Y', 8, 2);
+  assert.equal(rej.rejected, true, `${P} rejection`);
+  assert.equal(rej.id, undefined, `${P} rejections have no id`);
+  assert.equal(b.orders.length, 0, `${P} a rejected order is removed`);
+  // toJSON keeps last prices and the shared id counter; caps trades and fills.
+  const j = a.toJSON();
+  assert.ok(j.last && Number.isInteger(j.seq), `${P} toJSON last and seq`);
+  assert.match(readUpstream('public/js/paper.js'), /trades: this\.trades\.slice\(-500\), fills: this\.fills\.slice\(-1000\)/, `${P} toJSON caps`);
+  assert.match(readUpstream('public/js/paper.js'), /for \(let guard = 0; guard < 50; guard\+\+\)/, `${P} the walk stops after 50 steps`);
+});
+
 test('PaperAccount exposes the engine API', async () => {
   const { PaperAccount } = await importUpstream('public/js/paper.js');
   for (const m of ['placeOrder', 'cancelOrder', 'closePosition', 'tick', 'bar', 'toJSON']) {
