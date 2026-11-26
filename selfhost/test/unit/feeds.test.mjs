@@ -363,7 +363,7 @@ test('the supervisor forwards stale notices to the ledger only with NOTIFY_STALE
   for (const notifyStale of [false, true]) {
     const notices = [];
     const ledger = { resumePoints: () => ({}), trigger: () => ({ fired: false }), saveProgress() {}, staleNotice: (s, since) => notices.push([s, since]) };
-    const sync = { snapshot: () => ({ keys: {} }), onChange: () => () => {} };
+    const sync = { snapshot: () => ({ keys: {} }), get: () => ({ value: null, version: 0, deleted: true }), onChange: () => () => {} };
     const lines = [];
     const log = { warn: (msg) => lines.push(msg), info() {}, error() {}, debug() {} };
     const sup = createAlertSupervisor({ ledger, sync, log, notifyStale, workerData: {}, workerUrl: url });

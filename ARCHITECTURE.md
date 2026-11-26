@@ -41,6 +41,7 @@ browser ──► selfhost/server.mjs  public port (5173)
 | `alerts/feeds.mjs`, `alerts/sources/` | Streaming sources (Yahoo relay, Binance, Coinbase), stable sharding, market hours, REST fallback, staleness. |
 | `alerts/worker.mjs`, `alerts/supervisor.mjs`, `alerts/net.mjs` | The worker thread, its supervisor (restarts, heartbeat watchdog), and its network routes. |
 | `notify/` | The Gotify provider and the durable outbox. |
+| `paper/` | Server-side paper trading: browser presence (who owns the live account) and the evaluator that runs upstream's engine while no main window is open. |
 | `cli.mjs` | `hash-password`, `totp-setup`, `token`, `sessions`, `backup`, `restore`, `notify-test`. |
 | `test/` | Unit, contract (against upstream), API, Playwright e2e and the container smoke test. |
 
@@ -65,7 +66,7 @@ browser ──► selfhost/server.mjs  public port (5173)
 | 009 | Single-user session auth, with TOTP mandatory in public mode. |
 | 010 | `main` mirrors upstream; `selfhosted` is production; upstream merged by PR with merge commits. |
 | 011–012 | Everything under `selfhost/`; upstream workflows disabled in settings, not edited. |
-| 013 | Server-side paper trading deferred; needs an upstream hook. |
+| 013 | Server-side paper trading: best effort, the server fills only while no main window is open (no upstream hook; see `selfhost/docs/PHASE5-PAPER.md`). |
 | 014 | Upstream code runs only in CI jobs without secrets. |
 
 ## Deliberate deviations found while building
@@ -98,4 +99,4 @@ The upstream behaviours this edition depends on are listed in [`selfhost/INTEGRA
   - The Yahoo fallback gets the regular-session price, so during a stream outage in pre-market or after-hours, extended-hours checks pause.
   - A very thinly traded stock can count as closed until it trades.
 - **One container per data folder.** After an unclean stop, a replacement container may be refused for up to 90 seconds.
-- **Server-side paper trading** is not implemented (Phase 5, optional).
+- **Server-side paper trading is best effort**: the server fills only while no main window is open, with the edge cases listed in SELFHOSTED.md.

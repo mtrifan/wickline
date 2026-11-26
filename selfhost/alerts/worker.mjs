@@ -3,15 +3,17 @@
 // alerts and the stored progress, and it reports triggers, progress and heartbeats.
 //
 // main -> worker  { type: 'alerts', items, resume? }  the alerts value (and resume points at start)
+//                 { type: 'paperSymbols', symbols }   symbols the paper account needs (watched first)
 //                 { type: 'flush' }                   report progress now (shutdown)
 // worker -> main  { type: 'trigger', id, price, at, gap }
 //                 { type: 'progress', points: { id: { price, at, session } } }
 //                 { type: 'stale', symbol, since }    a symbol's prices stopped while its market is open
 //                 { type: 'heartbeat', status }       every HEARTBEAT_MS
 //                 { type: 'unsupported', symbols }    armed symbols no source serves
+//                 { type: 'price', symbol, price, at } a streamed price for a paper symbol (account's name)
 
 import { parentPort, workerData } from 'node:worker_threads';
-import { createEvaluator } from './evaluate.mjs';
+import { createEvaluator, normalizeSymbol } from './evaluate.mjs';
 import { createFeeds, route, chartOpen } from './feeds.mjs';
 import { createNet } from './net.mjs';
 import { createYahooSource } from './sources/yahoo.mjs';
@@ -37,6 +39,7 @@ const cryptoRest = createCryptoRest({ fetch: net.fetch });
 let dirty = false;
 let truncated = 0;
 let unsupported = [];
+let paperBySymbol = new Map(); // normalized symbol -> the account's own symbol names
 
 async function loopbackJson(path) {
   const r = await net.loopback(`${baseUrl}${path}`, { headers: internal, signal: AbortSignal.timeout(15_000) });
@@ -63,6 +66,10 @@ function onPrice(t) {
   } catch (e) {
     log.error('alert evaluation failed', { error: e?.message });
   }
+  // Paper fills use streamed prices only (REST fallback prices can be delayed).
+  if (t.source === 'stream') {
+    for (const name of paperBySymbol.get(normalizeSymbol(t.symbol)) ?? []) send({ type: 'price', symbol: name, price: t.price, at: t.at });
+  }
 }
 
 const feeds = createFeeds({
@@ -87,7 +94,12 @@ const feeds = createFeeds({
 
 function applyAlerts(items, resume) {
   evaluator.setAlerts(items, { resume, now: Date.now() });
-  const all = evaluator.symbols();
+  watch();
+}
+
+/** Paper symbols first (a stop protects money), then alert symbols, under ALERT_MAX_SYMBOLS. */
+function watch() {
+  const all = [...new Set([...paperBySymbol.keys(), ...evaluator.symbols()])];
   const supported = all.filter((s) => route(s));
   const other = all.filter((s) => !route(s));
   truncated = Math.max(0, supported.length - maxSymbols);
@@ -108,6 +120,14 @@ function flushProgress(force = false) {
 parentPort.on('message', (msg) => {
   try {
     if (msg?.type === 'alerts') applyAlerts(msg.items, msg.resume);
+    else if (msg?.type === 'paperSymbols') {
+      paperBySymbol = new Map();
+      for (const s of Array.isArray(msg.symbols) ? msg.symbols : []) {
+        const k = normalizeSymbol(s);
+        paperBySymbol.set(k, [...(paperBySymbol.get(k) ?? []), s]);
+      }
+      watch();
+    }
     else if (msg?.type === 'flush') { flushProgress(true); send({ type: 'flushed' }); }
   } catch (e) {
     log.error('alert worker message failed', { error: e?.message });

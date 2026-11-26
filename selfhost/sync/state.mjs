@@ -230,6 +230,12 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
     return { changed: true, version: result.change.ver, rev: result.change.rev };
   }
 
+  /** One key's current value: { value, version, deleted } (value null when deleted or absent). */
+  function get(key) {
+    const row = q.row.get(key);
+    return row ? { value: row.deleted ? null : row.value, version: row.version, deleted: row.deleted === 1 } : { value: null, version: 0, deleted: true };
+  }
+
   /** Registers the hook for a merged key. */
   function useHook(key, hook) {
     if (policyFor(key, opts) !== 'merge') throw new Error(`useHook: ${key} is not a merged key`);
@@ -301,5 +307,5 @@ export function createSyncState(db, { syncWorkspace = true, now = Date.now, log,
   /** Calls fn(change) after every committed change. Returns an unsubscribe function. */
   function onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
 
-  return { epoch, rev, prunedRev, snapshot, write, mutate, useHook, changesSince, exportKeys, replaceAll, resetEpoch, onChange, onEpoch, policyFor: (k) => policyFor(k, opts) };
+  return { epoch, rev, prunedRev, snapshot, get, write, mutate, useHook, changesSince, exportKeys, replaceAll, resetEpoch, onChange, onEpoch, policyFor: (k) => policyFor(k, opts) };
 }

@@ -148,15 +148,22 @@ test('progress survives a restart: a crossing during the downtime fires once, no
   assert.equal(g.requests[0].message, 'Now 201 (crossed while Wickline was restarting) · buy');
 });
 
-test('ALERTS_SERVER=false runs no worker', async () => {
+test('ALERTS_SERVER=false checks no alerts; with PAPER_SERVER=false too, no worker runs', async () => {
   const relay = newRelay();
   const ctx = await start(newDir(), relay, { ALERTS_SERVER: 'false' });
   cleanup.push(() => ctx.app.close());
   await ctx.put([armed], 0);
   await new Promise((r) => setTimeout(r, 300));
-  assert.equal(relay.streams.size, 0);
+  assert.equal(relay.streams.size, 0, 'the armed alert is not watched');
   const st = await (await fetch(`${ctx.base}/api/selfhost/alerts/status`, { headers: { cookie: ctx.cookie } })).json();
-  assert.deepEqual(st, { enabled: false });
+  assert.equal(st.enabled, false);
+  assert.equal(st.paper.owner, 'browser', 'paper trading still runs');
+  const relay2 = newRelay();
+  const off = await start(newDir(), relay2, { ALERTS_SERVER: 'false', PAPER_SERVER: 'false' });
+  cleanup.push(() => off.app.close());
+  const st2 = await (await fetch(`${off.base}/api/selfhost/alerts/status`, { headers: { cookie: off.cookie } })).json();
+  assert.deepEqual(st2, { enabled: false, paper: { enabled: false } });
+  assert.equal(off.app.internalPort, null, 'no internal listener without a worker');
 });
 
 test('a re-arm pushes one more; a restart after a trigger pushes nothing again', async () => {
@@ -188,4 +195,25 @@ test('a re-arm pushes one more; a restart after a trigger pushes nothing again',
   await new Promise((r) => setTimeout(r, 300));
   assert.equal(g.requests.length, 2);
   assert.equal((await two.alerts()).items[0].active, false);
+});
+
+test('paper trading: the worker watches the account\'s symbols; presence keeps the browser the owner', async () => {
+  const relay = newRelay();
+  const ctx = await start(newDir(), relay);
+  cleanup.push(() => ctx.app.close());
+  const { epoch } = await (await fetch(`${ctx.base}/api/selfhost/state`, { headers: { cookie: ctx.cookie } })).json();
+  const { PaperAccount } = await import('../../../public/js/paper.js');
+  const acct = new PaperAccount({});
+  acct.tick('YAHOO:MSFT', 400, 1);
+  acct.placeOrder({ symbol: 'YAHOO:MSFT', side: 'buy', type: 'limit', qty: 1, price: 390 }, { price: 400, time: 1 });
+  const r = await fetch(`${ctx.base}/api/selfhost/state/paper`, { method: 'PUT', headers: { origin: ctx.base, cookie: ctx.cookie, 'x-wickline-selfhost': '1', 'content-type': 'application/json' }, body: JSON.stringify({ value: JSON.stringify(acct.toJSON()), baseVersion: 0, epoch }) });
+  assert.equal(r.status, 200);
+  await until(() => relay.watching('MSFT'));
+  const p = await fetch(`${ctx.base}/api/selfhost/presence`, { method: 'POST', headers: { origin: ctx.base, cookie: ctx.cookie, 'x-wickline-selfhost': '1' } });
+  assert.equal(p.status, 200);
+  assert.equal((await fetch(`${ctx.base}/api/selfhost/presence`, { method: 'POST', headers: { origin: ctx.base, cookie: ctx.cookie } })).status, 403, 'needs the X-Wickline-Selfhost header');
+  assert.equal((await fetch(`${ctx.base}/api/selfhost/presence`, { method: 'POST', headers: { origin: ctx.base, 'x-wickline-selfhost': '1' } })).status, 401, 'needs a login');
+  const st = await (await fetch(`${ctx.base}/api/selfhost/alerts/status`, { headers: { cookie: ctx.cookie } })).json();
+  assert.equal(st.paper.owner, 'browser');
+  assert.deepEqual(st.paper.watched, ['YAHOO:MSFT']);
 });

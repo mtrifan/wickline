@@ -379,6 +379,16 @@
     window.addEventListener('pagehide', () => { const l = readLease(); if (l && l.id === tabId) del(LEASE); });
   }
 
+  // --- presence for server-side paper trading -------------------------------------------------
+  // Every main window (not a pop-out, which never fills paper orders) tells the server it is here,
+  // so the server leaves the live paper account to the browser (selfhost/docs/PHASE5-PAPER.md).
+  // Loading the page already counted; this keeps the 150 s lease alive while the window stays open.
+  if (new URLSearchParams(location.search).get('popout') !== '1') {
+    setInterval(() => {
+      fetch('/api/selfhost/presence', { method: 'POST', headers: { 'X-Wickline-Selfhost': '1' }, credentials: 'same-origin', keepalive: true }).catch(() => {});
+    }, 30_000);
+  }
+
   // --- other tabs' writes, banners and status -------------------------------------------------
 
   window.addEventListener('storage', (e) => {
