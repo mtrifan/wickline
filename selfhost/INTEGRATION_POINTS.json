@@ -15,7 +15,7 @@
     { "id": "url-hash", "file": "public/js/app.js", "contract": "the URL hash is s=<symbol>&tf=<tf> and is applied over the stored active chart on load (boot.js strips it before a sync reload)", "test": "test/contract/frontend.test.mjs" },
     { "id": "scripts-shape", "file": "public/js/scripts.js", "contract": "saved scripts are entries {id, name, code, created, updated}; the merge uses id + updated", "test": "test/contract/frontend.test.mjs" },
     { "id": "alert-semantics", "file": "public/js/alerts.js", "contract": "alert JSON {id, symbol, condition, price, message, active, created, triggeredAt, triggerPrice}; crossing rule and first-tick-ignored, pinned by tick fixtures shared with the server evaluator", "test": "test/contract/alerts.test.mjs" },
-    { "id": "crypto-feeds", "file": "public/js/datafeed.js", "contract": "Binance @miniTicker combined streams and the Coinbase ws-feed ticker channel, mirrored by the server adapters", "test": "test/contract/frontend.test.mjs" },
+    { "id": "crypto-feeds", "file": "public/js/datafeed.js, public/js/crypto-exchanges.js", "contract": "Binance @miniTicker combined streams, the Coinbase ws-feed ticker channel, and Bybit/OKX tickers channels (hosts, categories, -SWAP ids, pings) in crypto-exchanges.js, mirrored by the alert worker's sources (Binance futures use /market/stream deliberately; see UPSTREAM.md)", "test": "test/contract/frontend.test.mjs" },
     { "id": "paper-engine", "file": "public/js/paper.js", "contract": "PaperAccount API (placeOrder, tick, bar, toJSON) for the optional server execution phase", "test": "test/contract/frontend.test.mjs" }
   ]
 }

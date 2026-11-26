@@ -9,9 +9,15 @@ const MAX_BACKOFF_MS = 30_000;
  * keepOpen({ urls, openWs, onOpen(ws), onMessage(data), onState(), silenceMs, log, name })
  *   urls      () => [url, ...] tried in turn (a function, so the subscription can change)
  *   openWs    (url) => a WebSocket (injected: the worker's routes it through WICKLINE_PROXY)
+ *   ping      { everyMs, message: () => string }: an application-level ping some exchanges need
+ *             (Bybit, OKX); its replies also keep the silence watchdog quiet
+ *   priceSilenceMs  reopen a connection whose subscription has delivered nothing for this long,
+ *             even if pongs keep arriving (a stalled subscription). onMessage returns true for
+ *             subscription data (a ticker update, with or without a new price). On a truly quiet
+ *             channel the wait doubles after each such reopen (up to 6x) and resets on data.
  * Returns { close(), get connected() }.
  */
-export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState = () => {}, silenceMs = 180_000, log, name = 'stream' }) {
+export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState = () => {}, silenceMs = 180_000, priceSilenceMs = null, ping = null, log, name = 'stream' }) {
   let ws = null;
   let host = 0;
   let retry = 0;
@@ -19,7 +25,10 @@ export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState =
   let connected = false;
   let timer = null;
   let watchdog = null;
+  let pinger = null;
   let lastMessage = 0;
+  let lastPrice = 0; // last subscription data (see priceSilenceMs)
+  let stallWindow = priceSilenceMs;
   let openedAt = 0;
 
   const setConnected = (v) => { if (connected !== v) { connected = v; onState(); } };
@@ -35,20 +44,28 @@ export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState =
     openedAt = Date.now();
     sock.onopen = () => {
       if (ws !== sock) return;
-      lastMessage = Date.now();
+      lastMessage = lastPrice = Date.now(); // the price clock starts at the subscription
       setConnected(true);
       try { onOpen(sock); } catch (e) { log?.error?.(`${name} subscribe failed`, { error: e?.message }); }
+      if (ping) {
+        clearInterval(pinger);
+        pinger = setInterval(() => { try { sock.send(ping.message()); } catch { /* closing */ } }, ping.everyMs);
+        pinger.unref?.();
+      }
     };
     sock.onmessage = (ev) => {
       if (ws !== sock) return;
       lastMessage = Date.now();
       retry = 0; // only data proves the connection works: a socket that opens and drops keeps backing off
-      try { onMessage(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString()); } catch (e) { log?.debug?.(`${name} message dropped`, { error: e?.message }); }
+      try {
+        if (onMessage(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString()) === true) { lastPrice = Date.now(); stallWindow = priceSilenceMs; }
+      } catch (e) { log?.debug?.(`${name} message dropped`, { error: e?.message }); }
     };
     sock.onerror = () => {}; // a close event follows
     sock.onclose = () => {
       if (ws !== sock) return;
       ws = null;
+      clearInterval(pinger);
       setConnected(false);
       host++; // the next attempt tries the next host
       scheduleReconnect();
@@ -64,8 +81,11 @@ export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState =
   }
 
   watchdog = setInterval(() => {
-    const stuck = ws && !connected && Date.now() - openedAt > 30_000; // a handshake that never completes
-    if (stuck || (ws && connected && Date.now() - lastMessage > silenceMs)) {
+    const now = Date.now();
+    const stuck = ws && !connected && now - openedAt > 30_000; // a handshake that never completes
+    const stalled = ws && connected && priceSilenceMs != null && now - lastPrice > stallWindow;
+    if (stalled) stallWindow = Math.min(stallWindow * 2, priceSilenceMs * 6); // quiet, not broken: wait longer next time
+    if (stuck || stalled || (ws && connected && now - lastMessage > silenceMs)) {
       log?.debug?.(`${name} silent; reconnecting`);
       try { ws.close(); } catch { /* closing anyway */ }
     }
@@ -79,6 +99,7 @@ export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState =
       closed = true;
       clearTimeout(timer);
       clearInterval(watchdog);
+      clearInterval(pinger);
       const s = ws;
       ws = null;
       setConnected(false);
