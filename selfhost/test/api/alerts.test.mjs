@@ -158,3 +158,34 @@ test('ALERTS_SERVER=false runs no worker', async () => {
   const st = await (await fetch(`${ctx.base}/api/selfhost/alerts/status`, { headers: { cookie: ctx.cookie } })).json();
   assert.deepEqual(st, { enabled: false });
 });
+
+test('a re-arm pushes one more; a restart after a trigger pushes nothing again', async () => {
+  const g = await fakeGotify();
+  const dir = newDir();
+  const relay = newRelay();
+  const env = { GOTIFY_URL: g.url, GOTIFY_TOKEN: 'tok' };
+  const one = await start(dir, relay, env);
+  await one.put([armed], 0);
+  await until(() => relay.watching('AAPL'));
+  relay.send({ s: 'AAPL', p: 199, m: 1 });
+  relay.send({ s: 'AAPL', p: 201, m: 1 });
+  await until(() => g.requests.length === 1);
+  const fired = await one.alerts();
+  // Re-arm from the browser (it saw the trigger), then a new crossing.
+  await one.put([{ ...fired.items[0], active: true, triggeredAt: null, triggerPrice: null }], fired.ver);
+  await until(() => relay.watching('AAPL'));
+  relay.send({ s: 'AAPL', p: 198, m: 1 }); // the first price after a re-arm is only a starting point
+  relay.send({ s: 'AAPL', p: 202, m: 1 });
+  await until(() => g.requests.length === 2);
+  assert.equal(g.requests[1].message, 'Now 202 · buy');
+  await one.app.close();
+  // Restart with the alert fired: more prices across the level push nothing.
+  const relay2 = newRelay();
+  const two = await start(dir, relay2, env);
+  cleanup.push(() => two.app.close());
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(relay2.streams.size, 0, 'a fired alert is not watched after the restart');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(g.requests.length, 2);
+  assert.equal((await two.alerts()).items[0].active, false);
+});
