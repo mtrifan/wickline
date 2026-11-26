@@ -142,15 +142,16 @@ If your router already forwards 443 to a reverse proxy on Unraid with a Let's En
        reverse_proxy <unraid-ip>:5173
      }
      ```
-3. **Find the proxy's address as Wickline sees it.** Open `https://wickline.yourdomain.com` and sign in, then run `docker logs wickline 2>&1 | grep '"msg":"login"' | tail -n 1`. While `TRUST_PROXY` is off, the `ip` shown is the proxy's address, for example `172.17.0.1` or `172.18.0.5`.
-4. **Two-factor login.** Run `docker exec -it wickline node selfhost/cli.mjs totp-setup` and add the code to an authenticator app.
-5. **Settings.** Edit the container:
+3. **Trust the proxy first.** Edit the container and set `TRUST_PROXY=true`, still with `EXPOSURE=private`. Without it, Wickline sees your HTTPS sign-in arrive as plain HTTP and refuses it with "Cross-origin request refused". The default `TRUSTED_PROXY_IPS` trusts private and Docker addresses, which covers a proxy on Unraid. Now `https://wickline.yourdomain.com` and `http://<unraid-ip>:5173` both work: check that you can sign in through the domain.
+   - Optional, to trust only the proxy: find its address with `docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' <proxy-container>`. Use your Unraid IP if that prints nothing (the proxy uses the host network). Put it in `TRUSTED_PROXY_IPS`.
+4. **Two-factor login.** Run `docker exec -it wickline node selfhost/cli.mjs totp-setup`. It prints `WICKLINE_TOTP_SECRET=…` and an `otpauth://` link. In your authenticator app, add it with *Enter a setup key*: time-based, using the secret.
+5. **Public mode.** Edit the container:
    - `EXPOSURE=public`;
-   - `WICKLINE_PASSWORD_HASH` (keep yours);
    - `WICKLINE_TOTP_SECRET` from step 4;
-   - `TRUST_PROXY=true`;
-   - `TRUSTED_PROXY_IPS` set to the address from step 3;
-   - `PUBLIC_URL=https://wickline.yourdomain.com`, so notification links work away from home.
+   - `PUBLIC_URL=https://wickline.yourdomain.com`, so notification links work away from home;
+   - keep `TRUST_PROXY=true` and your password hash.
+
+   If the container stops, `docker logs wickline --tail 20` lists what is missing. To undo, set `EXPOSURE=private` again.
 6. **Close the direct port.** Do not forward 5173 on your router. Public mode refuses plain-HTTP requests, so `http://<unraid-ip>:5173` stops working even at home: use the domain there too. That needs your router to support hairpin NAT, or local DNS pointing the name at the proxy. A proxy on a shared Docker network can reach Wickline without the port published at all.
 
 ## Sync between devices
