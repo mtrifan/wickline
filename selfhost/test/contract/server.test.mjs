@@ -79,6 +79,10 @@ test('Yahoo stream: SSE, at most 100 symbols, ticks carry the session flag m', (
   assert.match(handler, /\.slice\(0,\s*100\)/, `${point('yahoo-stream')} the server adapter shards Yahoo symbols by this cap`);
   assert.match(handler, /data: \$\{JSON\.stringify\(tick\)\}/, point('yahoo-stream'));
   assert.match(src, /\bm:\s*f\[7\] != null \? Number\(f\[7\]\) : 0/, `${point('yahoo-stream')} tick.m (session flag)`);
+  assert.match(src, /\bs:\s*f\[1\],/, `${point('yahoo-stream')} tick.s is the bare Yahoo ticker`);
+  // Alerts store the symbol the browser's quote stream reports: Yahoo quotes as YAHOO:<ticker>.
+  const feed = readUpstream('public/js/datafeed.js');
+  assert.match(feed, /this\.onQuote\(`YAHOO:\$\{ticker\}`/, `${point('yahoo-stream')} the worker maps ticks to YAHOO:<ticker>`);
 });
 
 test('lib/proxy.mjs exports envProxy and setServerProxy', async () => {

@@ -74,6 +74,10 @@ Everything is set through environment variables. Each secret also accepts `<NAME
 | `GOTIFY_PRIORITY` | `8` | Gotify priority, 0-10. Android shows 8 and above as a heads-up notification. |
 | `PUBLIC_URL` | none | How you reach Wickline from your phone, e.g. `https://wickline.example.com`. Tapping a notification opens this address. |
 | `NOTIFY_MAX_ATTEMPTS` | `8` | Attempts per notification before giving up (retries back off from 5 s to 30 min). |
+| `ALERTS_SERVER` | `true` | Check alerts on the server, with no browser open. `false` leaves alerts to open browser tabs (their triggers are still pushed). |
+| `ALERT_EXTENDED_HOURS` | `true` | Also check pre-market and after-hours prices. Each session is compared only with itself, so the jump from one session to the next never counts as a crossing. |
+| `ALERT_RESUME_MAX_GAP` | `15` | Minutes. After a restart within this time, the last price seen before it is kept, so a crossing during the downtime fires once (the notification says so). After a longer gap the first price is only a starting point. |
+| `ALERT_MAX_SYMBOLS` | `200` | Most symbols with armed alerts checked on the server. Beyond it, some are left to the browser and a warning is logged. |
 | `WICKLINE_PROXY` | none | Outbound HTTP or SOCKS5 proxy for market data (also `HTTPS_PROXY`, `ALL_PROXY`). |
 | `PORT`, `HOST`, `DATA_DIR` | `5173`, `0.0.0.0`, `/data` | Listener and data location. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. Logs are JSON lines on stdout/stderr. |
@@ -139,11 +143,16 @@ Notifications are queued in the database and survive restarts. When Gotify is un
 
 Run only one container on a data folder: a second one refuses to start while the first is running. After an unclean stop (a crash, a power cut) a replacement container may be refused for up to 90 seconds; the same container restarting is never refused.
 
-When an alert fires in an open Wickline tab, the server sends one notification for it: a second device that saw the same crossing, or a retried request, does not send another. An alert that fired on a device while it was offline is pushed when the device reconnects, if that was within the last 15 minutes. The notification shows the alert ("BTCUSDT crossing up 100000") and the price at that moment, plus your note. Checking alerts with no browser open arrives later in Phase 3.
+When an alert fires in an open Wickline tab, the server sends one notification for it: a second device that saw the same crossing, or a retried request, does not send another. An alert that fired on a device while it was offline is pushed when the device reconnects, if that was within the last 15 minutes. The notification shows the alert ("BTCUSDT crossing up 100000") and the price at that moment, plus your note. 
+
+The server also checks alerts itself, with no browser open, using the same live Yahoo prices the app shows (stocks, ETFs, indices, futures, forex). It follows the app's rules: "crossing up" fires when the price goes from below the level to at or above it, and the first price after you arm an alert is only a starting point. Whichever side sees a crossing first, the server or a browser, records it; the notification is sent once. While signed in, `/api/selfhost/alerts/status` shows whether the checker is running, how many symbols it watches, and which alert symbols it cannot check yet. Crypto symbols from Binance and Coinbase are still checked only in the browser.
+
+Like an app tab left open overnight, the checker compares the first regular-session price of the day with the previous close, so a level crossed between the close and the open fires at the open. If the checker stops, it is restarted automatically; `/api/health/ready` reports only the web server and database, so the checker restarting never marks the container unhealthy.
 
 ## Security model
 
 - **Login covers everything** except `/api/health/ready`, the container healthcheck, which returns only `{"ok":true}`. That includes the app, its market-data API, and upstream's `/api/health`.
+- **The alert checker's access:** the server-side alert checker reads market data through a second listener bound to `127.0.0.1` on a random port inside the container, never exposed. It answers only three read-only market-data routes, and only with a random credential created at each start that never leaves the process.
 - **Failed logins** get an increasing delay per client, never a lockout. In public mode a short global spacing is added.
 - **Cross-site requests:** every state-changing request from a browser must carry a same-origin `Origin` header, and session cookies are `HttpOnly; SameSite=Lax`. Changes through the self-hosting JSON API also need an `X-Wickline-Selfhost: 1` header. Requests with an API token (`Authorization: Bearer`) need no `Origin`: browsers never send these tokens on their own.
 - **Slow clients:** a request must arrive within 60 seconds. Long-lived streams are not affected.
@@ -177,7 +186,7 @@ See [UPGRADE.md](UPGRADE.md). In short: everything lives in the `/data` volume (
 ## Known limitations
 
 - Single user.
-- Alerts are still checked only while Wickline is open in a browser tab; a trigger found there is pushed through Gotify. Checking alerts on the server, with no browser open, arrives later in Phase 3.
+- The server checks only Yahoo symbols so far. Alerts on Binance and Coinbase symbols are checked only while Wickline is open in a browser tab (their triggers are still pushed). The server also has no fallback yet for a Yahoo stream that goes quiet while the market is open.
 - The content security policy is report-only, because upstream relies on an inline script and `unsafe-eval` in its script sandbox.
 
 ## Licence

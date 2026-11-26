@@ -95,6 +95,10 @@ export function loadConfig(env = process.env, { readFile = readFileSync } = {}) 
     gotifyToken: secret(env, 'GOTIFY_TOKEN', readFile, problems).trim(),
     gotifyPriority: int(env, 'GOTIFY_PRIORITY', 8, { min: 0, max: 10 }, problems),
     notifyMaxAttempts: int(env, 'NOTIFY_MAX_ATTEMPTS', 8, { min: 1, max: 50 }, problems),
+    alertsServer: bool(env.ALERTS_SERVER, true),
+    alertExtendedHours: bool(env.ALERT_EXTENDED_HOURS, true),
+    alertResumeMaxGapMin: int(env, 'ALERT_RESUME_MAX_GAP', 15, { min: 0, max: 1440 }, problems),
+    alertMaxSymbols: int(env, 'ALERT_MAX_SYMBOLS', 200, { min: 1, max: 2000 }, problems),
   };
 
   if (!['debug', 'info', 'warn', 'error'].includes(cfg.logLevel)) problems.push('LOG_LEVEL must be debug, info, warn or error');

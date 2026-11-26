@@ -37,3 +37,16 @@ test('alert records keep their field names', () => {
   assert.match(src, /Object\.assign\(a, \{ active: false, triggeredAt: Date\.now\(\), triggerPrice: price \}\)/, point('alert-semantics'));
   assert.match(src, /Object\.assign\(a, \{ active: true, triggeredAt: null, triggerPrice: null \}\)/, `${point('alert-semantics')} re-arm`);
 });
+
+// The server evaluator (PLAN §2.5.3) over the same fixtures: it must fire exactly where upstream does.
+const { createEvaluator } = await import('../../alerts/evaluate.mjs');
+
+for (const c of cases) {
+  test(`server evaluator matches upstream: ${c.name}`, () => {
+    const ev = createEvaluator();
+    ev.setAlerts([{ id: 'a1', symbol: 'TEST:X', active: true, ...c.alert }]);
+    const fired = [];
+    c.ticks.forEach((t, i) => { if (ev.tick({ symbol: 'TEST:X', price: t === 'NaN' ? NaN : t }).length) fired.push(i); });
+    assert.deepEqual(fired, runUpstream(c.alert, c.ticks).fired, point('alert-semantics'));
+  });
+}
