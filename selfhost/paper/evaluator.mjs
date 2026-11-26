@@ -86,15 +86,22 @@ export function createPaperEvaluator({ sync, db, outbox, presence, publicUrl = n
   }
 
   function apply(symbol, price, atMs, replay = true) {
+    // A price for a symbol with work may fill: keep the account as it was (all marks included), so a
+    // failed save can be retried from exactly this state rather than from older stored marks.
+    const before = account.hasWork(symbol) ? new PaperAccount({}, account.toJSON()) : null;
     const results = account.tick(symbol, price, Math.floor(atMs / 1000));
     if (!results.length) { marksMoved = true; return; }
     let outcome;
     try {
       outcome = commit(results);
     } catch (e) {
-      // A storage failure, not a conflict: reload and give this one price one more chance.
+      // A storage failure, not a conflict. If the stored account is still the one we hold, retry
+      // this price once from the state before it (same generation: queued prices stay valid);
+      // if it changed, it is an outside change: reload.
       log?.error('paper commit failed', { error: e });
-      load();
+      const cur = sync.get('paper');
+      if (sync.epoch() === held.epoch && cur.version === held.version) account = before;
+      else { load(); return; }
       if (replay) { apply(symbol, price, atMs, false); return; }
       paused = `storage error: ${e?.message || e}`;
       return;
@@ -110,7 +117,7 @@ export function createPaperEvaluator({ sync, db, outbox, presence, publicUrl = n
   function price({ symbol, price: p, at }) {
     if (!owner || paused || !account) return;
     if (!Number.isFinite(p) || !Number.isFinite(at)) return;
-    if (at < generationAt) return; // received before the account last changed underneath
+    if (at <= generationAt) return; // received before (or in the same millisecond as) the last outside change
     if (now() - at > freshMs) return; // waited too long (a backed-up queue): not a current price
     apply(symbol, p, at);
   }
@@ -142,12 +149,13 @@ export function createPaperEvaluator({ sync, db, outbox, presence, publicUrl = n
   }
 
   // Anything else changing the account: reload (the evaluator's own commits are skipped).
+  // A successful outside change is a fresh start: it also lifts a pause from earlier storage errors.
   const offChange = sync.onChange((c) => {
     if (c.key !== 'paper') return;
     if (c.by === BY) return;
-    if (owner) load(); else emit();
+    if (owner) { paused = null; load(); } else emit();
   });
-  const offEpoch = sync.onEpoch(() => { if (owner) load(); else emit(); });
+  const offEpoch = sync.onEpoch(() => { if (owner) { paused = null; load(); } else emit(); });
 
   return {
     tick,

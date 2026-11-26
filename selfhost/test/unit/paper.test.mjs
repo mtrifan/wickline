@@ -41,7 +41,7 @@ function setup() {
   };
   const stored = () => new PaperAccount({}, JSON.parse(sync.get('paper').value));
   const rows = () => db.prepare('SELECT dedup_key, payload FROM notification_outbox ORDER BY id').all();
-  const away = () => { clock.t += PRESENCE_LEASE_MS + 1; paper.tick(); };
+  const away = () => { clock.t += PRESENCE_LEASE_MS + 1; paper.tick(); clock.t += 1; }; // prices come after the takeover
   return { db, sync, clock, presence, paper, browserSave, stored, rows, away };
 }
 
@@ -97,7 +97,9 @@ test('a price received before the account changed cannot fill an order placed af
   assert.equal(withOrder.placeOrder(limitBuy, { price: 190, time: 2 }).ok, true);
   s.browserSave(withOrder); // a browser (or the API) slipped in a new order: an external change
   s.paper.price({ symbol: 'YAHOO:AAPL', price: 180, at: earlier }); // an older price, delivered late
-  assert.equal(s.stored().orders.length, 1, 'dropped: received before the change');
+  s.paper.price({ symbol: 'YAHOO:AAPL', price: 181, at: s.clock.t }); // the same millisecond as the change
+  assert.equal(s.stored().orders.length, 1, 'dropped: received before (or as) the change');
+  s.clock.t += 1;
   s.paper.price({ symbol: 'YAHOO:AAPL', price: 184, at: s.clock.t });
   assert.equal(s.stored().orders.length, 0, 'a price after the change fills');
 });
@@ -147,7 +149,7 @@ test('a transient storage failure replays that price once', () => {
   const real = s.sync.mutate;
   s.sync.mutate = (...args) => { if (fail-- > 0) throw new Error('disk I/O error'); return real(...args); };
   const paper = createPaperEvaluator({ sync: s.sync, db: s.db, outbox: null, presence: s.presence, now: () => s.clock.t });
-  s.clock.t += PRESENCE_LEASE_MS + 1; paper.tick();
+  s.clock.t += PRESENCE_LEASE_MS + 1; paper.tick(); s.clock.t += 1;
   paper.price({ symbol: 'YAHOO:AAPL', price: 184, at: s.clock.t });
   assert.equal(s.stored().orders.length, 0, 'filled on the replay');
   assert.equal(paper.status().paused, null);
@@ -182,7 +184,7 @@ test('a commit against an account that changed underneath writes nothing and rel
   // An evaluator that does not hear about changes (as if one slipped in between its load and commit).
   const deaf = { ...s.sync, onChange: () => () => {}, onEpoch: () => () => {}, get: s.sync.get, mutate: s.sync.mutate, epoch: s.sync.epoch };
   const paper = createPaperEvaluator({ sync: deaf, db: s.db, outbox: null, presence: s.presence, now: () => s.clock.t });
-  s.clock.t += PRESENCE_LEASE_MS + 1; paper.tick();
+  s.clock.t += PRESENCE_LEASE_MS + 1; paper.tick(); s.clock.t += 1;
   const cancelled = s.stored();
   cancelled.cancelOrder(cancelled.orders[0].id);
   s.browserSave(cancelled); // the browser cancelled the order
@@ -193,4 +195,65 @@ test('a commit against an account that changed underneath writes nothing and rel
   paper.price({ symbol: 'YAHOO:AAPL', price: 183, at: s.clock.t + 1 });
   assert.equal(s.stored().positions['YAHOO:AAPL'], undefined, 'after the reload, there is nothing to fill');
   paper.close();
+});
+
+test('a failed save retries from the account as it was, other marks included (a rejection stays a rejection)', () => {
+  const s = setup();
+  // Long 10 A at 100, a pending buy of 10 B at 90, little cash: when A falls, B must be rejected.
+  const a = new PaperAccount({ balance: 1_000, leverage: 2 });
+  a.tick('YAHOO:A', 100, 1); a.tick('YAHOO:B', 100, 1);
+  assert.equal(a.placeOrder({ symbol: 'YAHOO:A', side: 'buy', type: 'market', qty: 10 }, { price: 100, time: 1 }).ok, true);
+  assert.equal(a.placeOrder({ symbol: 'YAHOO:B', side: 'buy', type: 'limit', qty: 10, price: 90 }, { price: 100, time: 1 }).ok, true);
+  s.browserSave(a);
+  let fail = 1;
+  const real = s.sync.mutate;
+  s.sync.mutate = (...args) => { if (fail-- > 0) throw new Error('disk I/O error'); return real(...args); };
+  s.away();
+  s.paper.price({ symbol: 'YAHOO:A', price: 50, at: s.clock.t }); // no fill: only a mark (not saved)
+  s.paper.price({ symbol: 'YAHOO:B', price: 89, at: s.clock.t }); // rejected; the save fails once
+  const acct = s.stored();
+  assert.equal(acct.positions['YAHOO:B'], undefined, 'still a rejection on the retry, not a fill');
+  assert.equal(JSON.parse(s.rows().at(-1).payload).title, 'B limit order rejected');
+});
+
+test('a transient failure keeps the queued prices that follow', () => {
+  const s = setup();
+  s.browserSave(browserAccount([limitBuy, { symbol: 'YAHOO:AAPL', side: 'buy', type: 'limit', qty: 1, price: 175 }]));
+  let fail = 1;
+  const real = s.sync.mutate;
+  s.sync.mutate = (...args) => { if (fail-- > 0) throw new Error('disk I/O error'); return real(...args); };
+  s.away();
+  s.paper.price({ symbol: 'YAHOO:AAPL', price: 184, at: s.clock.t });
+  s.paper.price({ symbol: 'YAHOO:AAPL', price: 174, at: s.clock.t });
+  assert.equal(s.stored().orders.length, 0, 'both crossings filled despite the failure');
+});
+
+test('an outside change lifts a pause from earlier storage failures', () => {
+  const s = setup();
+  s.browserSave(browserAccount([limitBuy]));
+  let failing = true;
+  const real = s.sync.mutate;
+  s.sync.mutate = (...args) => { if (failing) throw new Error('disk full'); return real(...args); };
+  s.away();
+  s.paper.price({ symbol: 'YAHOO:AAPL', price: 184, at: s.clock.t });
+  assert.match(String(s.paper.status().paused), /disk full/);
+  failing = false; // storage repaired; then the account is imported or changed
+  s.sync.replaceAll({ paper: JSON.stringify(browserAccount([limitBuy]).toJSON()) });
+  assert.equal(s.paper.status().paused, null);
+  s.clock.t += 1;
+  s.paper.price({ symbol: 'YAHOO:AAPL', price: 184, at: s.clock.t });
+  assert.equal(s.stored().orders.length, 0, 'fills again');
+  // Paused again; this time a browser save (an ordinary change, not an import) lifts it.
+  failing = true;
+  const again = s.stored();
+  assert.equal(again.placeOrder({ symbol: 'YAHOO:AAPL', side: 'buy', type: 'limit', qty: 1, price: 170 }, { price: 184, time: 3 }).ok, true);
+  failing = false; s.browserSave(again); failing = true;
+  s.clock.t += 1;
+  s.paper.price({ symbol: 'YAHOO:AAPL', price: 169, at: s.clock.t });
+  assert.match(String(s.paper.status().paused), /disk full/);
+  failing = false;
+  const edited = s.stored();
+  edited.cancelOrder(edited.orders[0].id); // a real change (an identical save makes no new version)
+  s.browserSave(edited);
+  assert.equal(s.paper.status().paused, null, 'a browser save lifts the pause too');
 });
