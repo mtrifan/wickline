@@ -109,3 +109,7 @@ These live outside git, and the sync job verifies them on every run:
 - Keep `selfhost/INTEGRATION_POINTS.json` and `selfhost/sync/key-classes.json` current. A new upstream storage key fails CI until it is classified.
 - Renew `SYNC_TOKEN`.
 - Prefer fixes that could be contributed upstream. Keep `UPSTREAM_PATCHES.json` empty.
+
+## Known upstream issues (not yet reported)
+
+- **Binance futures live prices.** `public/js/datafeed.js` streams USDⓈ-M futures from `wss://fstream.binance.com/stream?streams=…`. Since about 2026-11 that path accepts the connection but sends nothing; `/market/stream` works. Upstream's browser futures prices are probably frozen until reloaded. The alert worker uses `/market/stream` (`selfhost/alerts/sources/crypto.mjs`, pinned by a unit test). When an upstream release fixes the path, drop the deviation and mirror upstream again.

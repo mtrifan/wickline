@@ -333,7 +333,7 @@ The owner is starting fresh (D1), so cross-origin migration (export snippet, Ele
 ### 2.5 Background alerts
 
 #### 2.5.1 Isolation
-- The worker runs in a `worker_threads` Worker under a supervisor that restarts it with backoff and exposes a heartbeat to `/api/health/ready`.
+- The worker runs in a `worker_threads` Worker under a supervisor that restarts it with backoff and replaces it when its heartbeat stops. *(As implemented: the heartbeat is reported at `/api/selfhost/alerts/status`, not in `/api/health/ready`, so a restarting worker never marks the container unhealthy.)*
 - All adapter message handlers are wrapped in try/catch.
 - The main process also has explicit `uncaughtException` / `unhandledRejection` policies: log, mark unhealthy, and let Docker restart it if needed.
 - One malformed exchange frame can never take down the UI or sync.
@@ -506,7 +506,7 @@ The browser's main window still evaluates alerts and shows in-page toasts, becau
 - **Runtime stage:** copies `server.mjs`, `lib/`, `public/`, `community/`, `package.json`, `LICENSE`, `node_modules/` and `selfhost/` (without tests).
 - **Labels:** OCI labels carry the upstream version, the selfhost revision and the git SHA.
 - **Settings:** `ENV HOST=0.0.0.0 PORT=5173 DATA_DIR=/data NODE_ENV=production`, `USER 99:100`, `VOLUME /data`, `EXPOSE 5173`, `STOPSIGNAL SIGTERM`.
-- **Healthcheck:** `HEALTHCHECK` calls `node -e "fetch('http://127.0.0.1:'+process.env.PORT+'/api/health/ready')…"`. It reports ready when the DB is reachable and the worker heartbeat is less than 60 s old.
+- **Healthcheck:** `HEALTHCHECK` calls `node -e "fetch('http://127.0.0.1:'+process.env.PORT+'/api/health/ready')…"`. It reports ready when the DB is reachable. *(As implemented: the worker heartbeat is not part of readiness; see §2.5.1.)*
 
 **Build:** multi-arch, amd64 and arm64.
 

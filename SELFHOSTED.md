@@ -4,9 +4,9 @@ An unofficial, self-hosted edition of [Wickline](https://github.com/keptaduona/w
 
 - **single-user login**: password, optional two-factor (TOTP), sessions that survive restarts;
 - **sync across devices**: watchlists, layouts, drawings, custom indicators, alerts and preferences, with daily backups;
-- **background price alerts** with Gotify push notifications, even with no browser open *(Phase 3)*.
+- **background price alerts** checked on the server around the clock (Yahoo, Binance, Coinbase), with one Gotify push notification per alert, even with no browser open.
 
-> **Status:** Phase 1 (container and authentication) is complete. Images are published as `ghcr.io/mtrifan/wickline:edge`; `:stable` arrives with the first tagged release (Phase 4). The roadmap is in [the plan](selfhost/docs/PLAN.md).
+> **Status:** login, sync, backups and server-side alerts are complete and in daily use. Images are published as `ghcr.io/mtrifan/wickline:edge`; the Unraid template and the examples below use `:edge` until the first tagged release brings versioned images and `:stable`. The roadmap is in [the plan](selfhost/docs/PLAN.md).
 
 ## Install
 
@@ -18,12 +18,23 @@ docker run --rm -it ghcr.io/mtrifan/wickline:edge node selfhost/cli.mjs hash-pas
 
 ### Unraid
 
-1. **Add the template.** Docker → Add Container → Template repositories. Add `https://github.com/mtrifan/wickline`, or paste the URL of [`selfhost/unraid/wickline.xml`](selfhost/unraid/wickline.xml) as the template URL.
-2. **Fill in the fields.**
+1. **Add the template.** Unraid's Template field is a list, not a text box, so copy the template onto the flash drive. In the Unraid terminal (`>_`, top right):
+   ```sh
+   mkdir -p /boot/config/plugins/dockerMan/templates-user
+   wget -O /boot/config/plugins/dockerMan/templates-user/my-wickline.xml \
+     https://raw.githubusercontent.com/mtrifan/wickline/selfhosted/selfhost/unraid/wickline.xml
+   ```
+2. **Pick it.** Docker → Add Container, reload the page, and choose **wickline** under *User templates* in the Template list.
+3. **Fill in the fields** (more under *Show more settings*):
    - **Password hash:** the `scrypt$…` output from above.
    - **Data:** `/mnt/user/appdata/wickline`. The default owner `nobody:users` (99:100) is what the container runs as.
    - **Exposure:** `private` for LAN/Tailscale.
-3. **Apply,** then open the WebUI (`http://<unraid-ip>:5173`).
+   - For push notifications: **Gotify URL**, **Gotify app token** and **Public URL** (see [Notifications](#notifications)).
+4. **Apply,** then open the WebUI (`http://<unraid-ip>:5173`).
+
+To update, click the container's icon → **Force update** (or use the update the Docker tab offers). Your data in `/mnt/user/appdata/wickline` is kept.
+
+**Do not run the `wget` command again after installing.** Unraid saves your values (password hash, TOTP secret, Gotify token) in that same `my-wickline.xml`, so downloading over it wipes them. When a release adds a setting you want, open the container's **Edit** page and use *Add another Path, Port, Variable, Label or Device* to add it by name (the variables are listed under [Configuration](#configuration)).
 
 ### Docker Compose
 
@@ -72,7 +83,7 @@ Everything is set through environment variables. Each secret also accepts `<NAME
 | `GOTIFY_URL` | none | Your Gotify server, e.g. `http://192.168.1.10:8070` or `https://gotify.example.com`. Wickline connects to it directly, never through `WICKLINE_PROXY`. |
 | `GOTIFY_TOKEN` | none | The token of a Gotify **application** created for Wickline (also `GOTIFY_TOKEN_FILE`). It never reaches the browser. |
 | `GOTIFY_PRIORITY` | `8` | Gotify priority, 0-10. Android shows 8 and above as a heads-up notification. |
-| `PUBLIC_URL` | none | How you reach Wickline from your phone, e.g. `https://wickline.example.com`. Tapping a notification opens this address. |
+| `PUBLIC_URL` | none | How you reach Wickline from your phone, e.g. `http://192.168.1.10:5173`, `http://wickline.home.lan:5173` (a local DNS name or CNAME; keep the port) or `https://wickline.example.com` behind a proxy. Tapping a notification opens this address; Wickline never connects to it, but your phone must be able to resolve and reach it. |
 | `NOTIFY_MAX_ATTEMPTS` | `8` | Attempts per notification before giving up (retries back off from 5 s to 30 min). |
 | `ALERTS_SERVER` | `true` | Check alerts on the server, with no browser open. `false` leaves alerts to open browser tabs (their triggers are still pushed). |
 | `ALERT_EXTENDED_HOURS` | `true` | Also check pre-market and after-hours prices. Each session is compared only with itself, so the jump from one session to the next never counts as a crossing. |

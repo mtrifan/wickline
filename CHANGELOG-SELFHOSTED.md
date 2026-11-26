@@ -7,6 +7,17 @@ Release tags: `sh-v<upstream version>-<revision>`. Image tags: `<upstream versio
 ## Unreleased
 
 ### Added
+- Server-side alerts and push notifications (Phase 3):
+  - Gotify notifications through a durable outbox: retries from 5 s to 30 min, one push per alert trigger however many devices report it, a test command (`cli.mjs notify-test`) and status (`/api/selfhost/notify/status`).
+  - Alerts checked on the server around the clock, in a supervised worker thread: Yahoo through upstream's own relay, Binance spot and futures, Coinbase. Upstream's crossing rules (pinned by a contract test), one price chain per market session (`ALERT_EXTENDED_HOURS`), resume after a short restart.
+  - Market hours, REST fallback when a stream goes quiet, stale detection and optional notices (`ALERT_POLL_INTERVAL`, `ALERT_CLOSED_POLL_INTERVAL`, `ALERT_STALE_AFTER`, `NOTIFY_STALE`), and `/api/selfhost/alerts/status`.
+  - The alerts merge: trigger fields are owned by the server, a stale device can neither cancel a trigger nor resurrect a deleted alert (30-day tombstones).
+  - One container per data folder (a lock; a second container exits with code 78).
+- Storage and sync across devices (Phase 2):
+  - Every synced setting lives in SQLite and is shared by all signed-in browsers, with live updates for alerts, the paper account, scripts and language, and a reload banner for the rest.
+  - Per-key conflict rules: first write wins with a notice (watchlist, drawings, layout, paper account), entry-by-entry merge (scripts, alerts), last write wins (preferences).
+  - Offline edits are kept and sent on reconnect; one tab per browser holds the connection.
+  - Daily backups (`BACKUP_INTERVAL_HOURS`, `BACKUP_KEEP`), backup download, JSON export and import, and `cli.mjs backup` / `restore` with a new epoch so open browsers reload into the restored data.
 - Container and authentication (Phase 1):
   - Docker image (Alpine, Node 24, about 245 MB): runs as UID 99, works with a read-only root filesystem, has a healthcheck (`/api/health/ready`) and stops gracefully on SIGTERM, even with open streams.
   - Docker Compose file and Unraid template.
