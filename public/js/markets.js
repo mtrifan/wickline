@@ -1,5 +1,5 @@
 // Curated instrument lists for the Markets panel. Every symbol can be charted, and anything
-// else Yahoo, Binance or Coinbase lists can be found with the symbol search.
+// else Yahoo, Binance, Coinbase, Bybit or OKX lists can be found with the symbol search.
 // Group titles and filter labels are in the UI language; ids, universes and names are not.
 
 import { t } from './i18n.js';
@@ -14,6 +14,10 @@ export const MARKET_GROUPS = [
   { id: 'all:binance', title: t('mk.g.allBinance'), universe: 'binance', filterLabel: t('mk.f.allQuoteCoins') },
   { id: 'all:binancef', title: t('mk.g.allBinancef'), universe: 'binancef', filterLabel: t('mk.f.allQuoteCoins') },
   { id: 'all:coinbase', title: t('mk.g.allCoinbase'), universe: 'coinbase', filterLabel: t('mk.f.allQuoteCurrencies') },
+  { id: 'all:bybit', title: t('mk.g.allBybit'), universe: 'bybit', filterLabel: t('mk.f.allQuoteCoins') },
+  { id: 'all:bybitf', title: t('mk.g.allBybitf'), universe: 'bybitf', filterLabel: t('mk.f.allQuoteCoins') },
+  { id: 'all:okx', title: t('mk.g.allOkx'), universe: 'okx', filterLabel: t('mk.f.allQuoteCoins') },
+  { id: 'all:okxf', title: t('mk.g.allOkxf'), universe: 'okxf', filterLabel: t('mk.f.allQuoteCoins') },
   {
     id: 'indices', title: t('mk.g.indices'),
     items: y([

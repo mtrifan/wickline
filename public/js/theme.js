@@ -125,6 +125,7 @@ function cssVars(p, mode) {
   const dark = mode === 'dark';
   return {
     '--bg': p.bg,
+    '--chart-bg': p.chartBg, // the legend's halo (style.css) must match the chart, not the page (issue #10)
     '--panel': p.panel,
     '--panel-2': mix(p.panel, p.text, dark ? 0.07 : 0.05),
     '--hover': mix(p.panel, p.text, dark ? 0.09 : 0.06),

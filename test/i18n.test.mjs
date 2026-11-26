@@ -9,10 +9,13 @@ import zhTW from '../public/js/lang/zh-TW.js';
 import ko from '../public/js/lang/ko.js';
 import es from '../public/js/lang/es.js';
 import ptBR from '../public/js/lang/pt-BR.js';
+import it from '../public/js/lang/it.js';
+import de from '../public/js/lang/de.js';
+import fr from '../public/js/lang/fr.js';
 import { t, lang, langFromLocale, LANGUAGES } from '../public/js/i18n.js';
 
 const root = new URL('../public/', import.meta.url);
-const DICTS = { en, 'zh-CN': zhCN, 'zh-TW': zhTW, ja, ko, es, 'pt-BR': ptBR };
+const DICTS = { en, 'zh-CN': zhCN, 'zh-TW': zhTW, ja, ko, es, 'pt-BR': ptBR, it, de, fr };
 const CJK = /[぀-ヿ㐀-鿿가-힯]/;
 let n = 0;
 const ok = (name, fn) => { fn(); n++; console.log(`  ok ${name}`); };
@@ -48,11 +51,12 @@ for (const id of Object.keys(DICTS).filter((x) => x !== 'en')) {
     }
   });
   ok(`${id} has no English sentences left over`, () => {
-    // An untranslated phrase: identical to English and made of several English words (three in Spanish
-    // and Portuguese, which share trading terms like "Stop loss" and "Take profit" with English).
-    const words = ['es', 'pt-BR'].includes(id) ? 3 : 2;
+    // An untranslated phrase: identical to English and made of several English words (three in the
+    // European languages, which share trading terms like "Stop loss" and "Take profit" with English).
+    // Indicator names ("Relative Strength Index") are proper names that German keeps in English.
+    const words = ['es', 'pt-BR', 'it', 'de', 'fr'].includes(id) ? 3 : 2;
     const phrase = new RegExp(`[a-z]{3,}(?: [a-z]{3,}){${words - 1}}`, 'i');
-    const left = Object.keys(d).filter((k) => typeof d[k] === 'string' && d[k] === en[k]
+    const left = Object.keys(d).filter((k) => !/^ind\.\w+\.name$/.test(k) && typeof d[k] === 'string' && d[k] === en[k]
       && phrase.test(d[k].replace(/<[^>]+>|\{\w+\}|https?:\S+/g, '')) && !CJK.test(d[k]));
     assert.deepEqual(left, [], `${id}: ${left.slice(0, 20).join(', ')}`);
   });
@@ -101,6 +105,9 @@ ok('the system language picks the UI language', () => {
   assert.equal(langFromLocale('pt-PT'), 'pt-BR');
   assert.equal(langFromLocale('ja-JP'), 'ja');
   assert.equal(langFromLocale('ja'), 'ja');
+  assert.equal(langFromLocale('it-IT'), 'it');
+  assert.equal(langFromLocale('de-AT'), 'de');
+  assert.equal(langFromLocale('fr-CA'), 'fr');
   assert.equal(langFromLocale('en-GB'), 'en');
   assert.equal(langFromLocale('lt-LT'), 'en');
   assert.equal(langFromLocale(undefined), 'en');

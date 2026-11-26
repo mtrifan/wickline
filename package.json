@@ -1,6 +1,6 @@
 {
   "name": "wickline",
-  "version": "0.1.9",
+  "version": "0.1.11",
   "description": "Free, open-source charting platform: desktop app or static site. Live crypto, stocks, forex, 100 indicators, your own JavaScript indicators and strategies with backtesting and a community library, drawing tools, alerts and option chains.",
   "license": "MIT",
   "type": "module",
@@ -15,7 +15,7 @@
     "dist:linux": "electron-builder --linux --publish never",
     "update-data": "node scripts/update-data.mjs",
     "update-vendor": "node -e \"const fs=require('fs');fs.copyFileSync('node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.mjs','public/vendor/lightweight-charts.mjs');fs.copyFileSync('node_modules/lightweight-charts/LICENSE','public/vendor/LICENSE-lightweight-charts.txt')\"",
-    "test": "node test/backtest.test.mjs && node test/strategy-worker.test.mjs && node test/clean-bars.test.mjs && node test/indicators.test.mjs && node test/data.test.mjs && node test/screener.test.mjs && node test/news.test.mjs && node test/paper.test.mjs && node test/heatmap.test.mjs && node test/heatmap-markets.test.mjs && node test/options.test.mjs && node test/layout.test.mjs && node test/script-sanitize.test.mjs && node test/community.test.mjs && node test/update.test.mjs && node test/server.test.mjs && node test/timeframes.test.mjs && node test/proxy.test.mjs && node test/i18n.test.mjs && node test/watchlist.test.mjs",
+    "test": "node test/backtest.test.mjs && node test/strategy-worker.test.mjs && node test/clean-bars.test.mjs && node test/indicators.test.mjs && node test/data.test.mjs && node test/screener.test.mjs && node test/news.test.mjs && node test/paper.test.mjs && node test/heatmap.test.mjs && node test/heatmap-markets.test.mjs && node test/options.test.mjs && node test/layout.test.mjs && node test/script-sanitize.test.mjs && node test/community.test.mjs && node test/update.test.mjs && node test/server.test.mjs && node test/timeframes.test.mjs && node test/proxy.test.mjs && node test/i18n.test.mjs && node test/watchlist.test.mjs && node test/drawings.test.mjs && node test/point-editor.test.mjs && node test/stroke.test.mjs && node test/entry-visibility.test.mjs && node test/fib.test.mjs && node test/crypto-exchanges.test.mjs",
     "test:e2e": "electron test/e2e.mjs"
   },
   "engines": {

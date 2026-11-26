@@ -6,7 +6,7 @@ import {
   normCdf, blackScholes, impliedVol, maxPain, putCallRatio, atmRow, expectedMove, unusualActivity, analyzeChain,
   optionsChain, optionsBody, optionsCacheSize, clearOptionsCache, RISK_FREE,
 } from '../lib/options.mjs';
-import { optionsUnderlying, daysLeft, timeLeft, fmtPrice, fmtCount, fmtIv, oiWindow } from '../public/js/options.js';
+import { optionsUnderlying, daysLeft, timeLeft, expiryKind, expiryLabel, expiryMenu, expiryButton, fmtPrice, fmtCount, fmtIv, oiWindow } from '../public/js/options.js';
 
 let failed = 0;
 const test = async (name, fn) => {
@@ -524,6 +524,35 @@ await test('oiWindow: strikes around the price, max pain included, no empty ends
   assert.equal(rows[lo3].strike, 70);
   assert.equal(hi3, 60);
   assert.deepEqual(oiWindow([], 100), [0, 0]);
+});
+
+await test('expiries are marked monthly, weekly or daily', () => {
+  const e = (y, m, d) => ({ t: Date.UTC(y, m - 1, d) / 1000, at: Date.UTC(y, m - 1, d, 21) / 1000 });
+  // December 2026: Fridays 4, 11, 18 (third), 25 (Christmas, so that week's expiry is Thursday the 24th).
+  // Stocks only have monthlies and weeklies: a Wednesday or a Thursday expiry is a weekly too.
+  const list = [e(2026, 12, 2), e(2026, 12, 4), e(2026, 12, 11), e(2026, 12, 17), e(2026, 12, 18), e(2026, 12, 24)];
+  assert.deepEqual(list.map((x) => expiryKind(x, list)), ['weekly', 'weekly', 'weekly', 'weekly', 'monthly', 'weekly']);
+  // The third Friday is a holiday (Juneteenth, June 19 2026): the monthly is Thursday the 18th.
+  const june = [e(2026, 6, 12), e(2026, 6, 18), e(2026, 6, 26)];
+  assert.deepEqual(june.map((x) => expiryKind(x, june)), ['weekly', 'monthly', 'weekly']);
+  // Deribit: the last Friday of the month is the monthly.
+  const btc = [e(2026, 12, 18), e(2026, 12, 25), e(2026, 12, 26)];
+  assert.deepEqual(btc.map((x) => expiryKind(x, btc, 'deribit')), ['weekly', 'monthly', 'daily']);
+  assert.equal(expiryLabel(e(2026, 12, 18), Date.UTC(2026, 11, 7), 'monthly'), 'Fri, Dec 18 · 11d · Monthly');
+  assert.equal(expiryLabel(e(2026, 12, 18), Date.UTC(2026, 11, 7)), 'Fri, Dec 18 · 11d');
+  // The menu: a month heading before each month's rows (with the year in another year), the picked one marked.
+  const d = { source: 'yahoo', expiry: e(2026, 12, 18).t, expiries: [e(2026, 11, 27), e(2026, 12, 4), e(2026, 12, 18), e(2027, 1, 15)] };
+  const html = expiryMenu(d, Date.UTC(2026, 10, 24));
+  assert.deepEqual([...html.matchAll(/class="menu-title">([^<]+)</g)].map((m) => m[1]), ['November', 'December', 'January 2027']);
+  assert.deepEqual([...html.matchAll(/class="op-exp-row op-(\w+)( on)?"/g)].map((m) => m[1] + (m[2] ? '*' : '')), ['weekly', 'weekly', 'monthly*', 'monthly']);
+  assert.ok(html.includes('<span>Fri 18</span><i class="op-kind op-monthly">M</i><small>24d</small>'), html);
+  assert.match(html, /title="Fri, Dec 18 · 24d · Monthly"/);
+  // The key at the bottom names the kinds in the list: no "Daily" for stocks, but there is one on Deribit.
+  const keyOf = (h) => [...h.matchAll(/<span><i class="op-kind op-\w+">(\w)<\/i>(\w+)<\/span>/g)].map((m) => `${m[1]} ${m[2]}`);
+  assert.deepEqual(keyOf(html), ['M Monthly', 'W Weekly']);
+  assert.deepEqual(keyOf(expiryMenu({ source: 'deribit', expiry: btc[0].t, expiries: btc }, Date.UTC(2026, 10, 24))), ['M Monthly', 'W Weekly', 'D Daily']);
+  // The button: the picked expiry and its badge.
+  assert.equal(expiryButton(d, Date.UTC(2026, 10, 24)), '<span>Fri, Dec 18 · 24d</span><i class="op-kind op-monthly" title="Monthly">M</i>');
 });
 
 console.log(failed ? `\n${failed} failed` : '\nall passed');

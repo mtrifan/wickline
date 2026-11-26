@@ -6,7 +6,11 @@ import * as LWC from '../vendor/lightweight-charts.mjs';
 import { createFeed, tfById, parseSymbol, displayTicker, isCryptoSymbol, sourceName } from './datafeed.js';
 import { tfIdOf } from './timeframes.js';
 import { INDICATORS, PALETTE, UP, DOWN, defaultParams, indicatorLabel, optionLabel, heikinAshi, heikinAshiAt } from './indicators.js';
-import { DrawingLayer, DRAW_COLORS } from './drawings.js';
+import { DrawingLayer, DRAW_COLORS, SYMBOL_SIZE, TOOLS, isSymbol } from './drawings.js';
+import { applyEntryVisibility, isHidden, setHiddenFlag, syncMarkers } from './entry-visibility.js';
+import { closeFibPanel, fibPanelId, openFibPanel } from './fib-panel.js';
+import { closePointEditor, editablePoints, openPointEditor, pointEditorId, refreshPointEditor } from './point-editor.js';
+import { STROKE_STYLES, STROKE_TOOLS, STROKE_WIDTH, clampWidth, strokeOf } from './stroke.js';
 import { BandFill, Countdown, TradeLines } from './primitives.js';
 import { engine, scriptStore } from './scripts.js';
 import { canRunCommunity } from './community.js';
@@ -95,6 +99,7 @@ function normalizeIndicator(i) {
     for (const [k, c] of Object.entries(i.colors)) if (/^[A-Za-z_][\w]{0,40}$/.test(k) && safeColor(c, null)) colors[k] = safeColor(c);
   }
   const out = { ...i, id: typeof i.id === 'string' && i.id ? i.id.slice(0, 64) : uid(), colors };
+  setHiddenFlag(out, i.hidden === true); // hidden from the legend's eye button
   if (i.type === 'script') {
     // The script declares its settings when it runs (applyScriptResult coerces them then); keep plain values.
     const params = {};
@@ -146,7 +151,21 @@ const ICON_PAUSE = '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M7.
 const ICON_STEP = '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 5.5v13l9-6.5z" fill="currentColor"/><path d="M16.5 5.5h2.5v13h-2.5z" fill="currentColor"/></svg>';
 const ICON_CUT = '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M12 3v18" stroke="currentColor" stroke-width="1.8" stroke-dasharray="2.5 2.5"/><path d="M5 9l-2 3 2 3M19 9l2 3-2 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 export const REPLAY_SPEEDS = [[0.5, '0.5×'], [1, '1×'], [2, '2×'], [3, '3×'], [5, '5×'], [10, '10×']];
+const ICON_TO_LATEST = '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 7l5 5-5 5M12 7l5 5-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const ICON_BELL = '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20a2 2 0 0 0 4 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
+const EYE = '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>';
+const eyeIcon = (extra = '') => `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${EYE}${extra}</svg>`;
+const ICON_EYE = eyeIcon();
+const ICON_EYE_OFF = eyeIcon('<path d="M4 4l16 16"/>');
+// One sample of each line style, for the buttons in the drawing's toolbar.
+const STROKE_ICONS = {
+  solid: '<path d="M3 12h18"/>',
+  dashed: '<path d="M2.5 12h4M10 12h4M17.5 12h4"/>',
+  dotted: '<path d="M3.5 12h.01M8.5 12h.01M13.5 12h.01M18.5 12h.01" stroke-width="3"/>',
+};
+const strokeIcon = (style) => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">${STROKE_ICONS[style]}</svg>`;
+const ICON_EDIT = '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M4 20h4L19 9l-4-4L4 16v4zM13.5 6.5l4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>';
+const ICON_LABELS = '<svg viewBox="0 0 24 24" width="16" height="16"><path d="M4 7V5h11v2M9.5 5v13M7.5 18h4M14 12h6M17 12v6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 /**
  * A series' price format with p decimals. Lightweight Charts writes its scale with a dot, so where
@@ -245,8 +264,18 @@ export class ChartView {
       <div class="pane-legends"></div>
       <div class="draw-bar" hidden>
         <div class="db-colors">${DRAW_COLORS.map((c) => `<button data-color="${c}" style="--c:${c}" aria-label="${t('chart.colorAria', { color: c })}"></button>`).join('')}</div>
+        <div class="db-stroke" hidden>
+          ${STROKE_STYLES.map((s) => `<button data-stroke="${s}" title="${t(`draw.style.${s}`)}" aria-label="${t(`draw.style.${s}`)}">${strokeIcon(s)}</button>`).join('')}
+          <label class="db-width" title="${t('draw.width')}"><input type="number" min="${STROKE_WIDTH.min}" max="${STROKE_WIDTH.max}" step="1" aria-label="${t('draw.width')}">px</label>
+        </div>
         <input class="db-text" placeholder="${t('draw.tool.text')}" maxlength="80" hidden>
+        <label class="db-size" title="${t('chart.symbolSize')}" hidden>
+          <input type="range" min="${SYMBOL_SIZE.min}" max="${SYMBOL_SIZE.max}" step="1" aria-label="${t('chart.symbolSize')}"><output></output>
+        </label>
         <button data-db="alert" title="${t('chart.alertAtPrice')}" hidden>${ICON_BELL}</button>
+        <button data-db="labels" class="db-labels" hidden>${ICON_LABELS}</button>
+        <button data-db="edit" title="${t('draw.edit')}" aria-label="${t('draw.edit')}" hidden>${ICON_EDIT}</button>
+        <button data-db="fib" title="${t('common.settings')}" aria-label="${t('common.settings')}" hidden>${ICON_GEAR}</button>
         <button data-db="delete" title="${t('chart.deleteDel')}">${ICON_TRASH}</button>
       </div>
       <div class="rp-pick" hidden><div class="rp-dim"></div></div>
@@ -269,6 +298,7 @@ export class ChartView {
         <button data-cell="max" title="${t('chart.maxTitle')}" aria-label="${t('chart.maxAria')}">${ICON_MAX}</button>
         <button data-cell="pop" title="${t('chart.popout')}" aria-label="${t('chart.popout')}">${ICON_POP}</button>
       </div>
+      <button class="to-latest" hidden title="${t('chart.toLatest')}" aria-label="${t('chart.toLatest')}">${ICON_TO_LATEST}</button>
       <div class="overlay loading" hidden><div class="spinner"></div></div>
       <div class="overlay error" hidden></div>`;
     host.append(this.el);
@@ -411,7 +441,7 @@ export class ChartView {
       if (this.beginPaperDrag(p, e)) return;
       if (!this.drawings.beginDrag(p.x, p.y)) return;
       this.chart.applyOptions({ handleScroll: false, handleScale: false });
-      const move = (ev) => { const q = this.paneCoords(ev, true); if (q) this.drawings.dragMove(q.x, q.y); };
+      const move = (ev) => { const q = this.paneCoords(ev, true); if (q) this.drawings.dragMove(q.x, q.y, ev.shiftKey); };
       const up = () => {
         window.removeEventListener('pointermove', move);
         window.removeEventListener('pointerup', up);
@@ -421,13 +451,22 @@ export class ChartView {
       window.addEventListener('pointermove', move);
       window.addEventListener('pointerup', up);
     }, true);
+    this.chartEl.addEventListener('dblclick', (e) => {
+      const p = this.paneCoords(e);
+      if (!p || this.replayPick || this.drawings.tool !== 'cursor') return;
+      const id = this.drawings.hitTest(p.x, p.y);
+      if (!id) return;
+      e.preventDefault();
+      this.drawings.select(id);
+      this.openPointEditorFor(this.drawings.selected, { x: e.clientX, y: e.clientY });
+    });
     this.chartEl.addEventListener('click', (e) => {
       const start = down;
       down = null;
       if (!start || Math.hypot(e.clientX - start.x, e.clientY - start.y) > 4) return; // a drag
       if (this.dragged) { this.dragged = false; return; }
       if (this.replayPick) { this.pickReplayAt(this.paneCoords(e)); return; }
-      this.drawings.handleClick({ point: this.paneCoords(e) });
+      this.drawings.handleClick({ point: this.paneCoords(e), shift: e.shiftKey });
     }, true);
 
     this.chart.subscribeCrosshairMove((param) => {
@@ -441,7 +480,10 @@ export class ChartView {
       if (real || !param.point) this.hooks.onCrosshair?.(this, param);
     });
 
+    const toLatest = this.q('.to-latest');
+    toLatest.addEventListener('click', () => { this.chart.timeScale().scrollToRealTime(); toLatest.hidden = true; });
     this.chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      this.updateToLatest(range);
       if (!range || this.loadingOlder || !this.feed?.canLoadMore || !this.bars.length) return;
       if (range.from < 40) this.loadOlder();
     });
@@ -478,7 +520,8 @@ export class ChartView {
       const row = btn.closest('.lg-row');
       if (btn.dataset.act === 'rm-cmp') { this.removeCompare(row.dataset.cmp); return; }
       const id = row.dataset.id;
-      if (btn.dataset.act === 'remove') this.removeIndicator(id);
+      if (btn.dataset.act === 'eye') this.setIndicatorHidden(id, !isHidden(this.live.get(id)?.inst));
+      else if (btn.dataset.act === 'remove') this.removeIndicator(id);
       else if (btn.dataset.act === 'code') this.hooks.onEditScript?.(this, this.live.get(id)?.inst.scriptId);
       else this.openSettings(id, btn);
     };
@@ -495,27 +538,106 @@ export class ChartView {
     bar.addEventListener('click', (e) => {
       const color = e.target.closest('[data-color]')?.dataset.color;
       if (color) { this.drawings.updateSelected({ color }); return; }
+      const style = e.target.closest('[data-stroke]')?.dataset.stroke;
+      if (style) { this.drawings.updateSelected({ style }); return; }
       const act = e.target.closest('[data-db]')?.dataset.db;
       if (act === 'delete') this.drawings.deleteSelected();
+      if (act === 'labels') {
+        const d = this.drawings.selected;
+        if (d) this.drawings.updateSelected({ labels: d.labels === false ? undefined : false });
+      }
       if (act === 'alert') {
         const d = this.drawings.selected;
         if (d) this.hooks.onCreateAlert?.(this, d.p1.price);
       }
+      if (act === 'fib') this.toggleFibPanel(e.target.closest('[data-db="fib"]'));
+      if (act === 'edit') this.togglePointEditor(e.target.closest('[data-db="edit"]'));
     });
     bar.querySelector('.db-text').addEventListener('input', (e) => this.drawings.updateSelected({ text: e.target.value }));
+    bar.querySelector('.db-text').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
+    bar.querySelector('.db-size input').addEventListener('input', (e) => {
+      this.drawings.updateSelected({ size: Number(e.target.value) });
+    });
+    bar.querySelector('.db-width input').addEventListener('input', (e) => {
+      if (e.target.value !== '' && Number.isFinite(Number(e.target.value))) this.drawings.updateSelected({ width: clampWidth(e.target.value) });
+    });
     bar.addEventListener('keydown', (e) => e.stopPropagation());
+  }
+
+  /** The gear on a selected Fib: its levels and options (fib-panel.js). The Fib keeps them in `d.fib`. */
+  toggleFibPanel(anchor) {
+    const d = this.drawings.selected;
+    if (!d || d.type !== 'fib') return;
+    if (fibPanelId() === d.id) { closeFibPanel(); return; }
+    closeSettings();
+    openFibPanel(anchor, d, {
+      onChange: (fib) => this.drawings.updateSelected({ fib }),
+      onReset: () => this.drawings.updateSelected({ fib: undefined, labels: undefined }),
+    });
+  }
+
+  /** Exact prices, dates and a label for the selected drawing (issue #6; point-editor.js). */
+  openPointEditorFor(d, anchor) {
+    if (!d || !editablePoints(d).length) return;
+    closeFibPanel();
+    closeSettings();
+    openPointEditor(anchor, d, {
+      title: TOOLS[d.type]?.label || '',
+      daily: this.tf.daily,
+      precision: this.meta?.precision ?? 2,
+      decimalComma: (1.5).toLocaleString(locale).includes(','),
+      onChange: (patch) => this.drawings.updateSelected(patch),
+    });
+  }
+
+  togglePointEditor(anchor) {
+    const d = this.drawings.selected;
+    if (!d) return;
+    if (pointEditorId() === d.id) { closePointEditor(); return; }
+    this.openPointEditorFor(d, anchor);
   }
 
   showDrawBar(d) {
     const bar = this.q('.draw-bar');
     bar.hidden = !d;
+    if (!d || fibPanelId() !== d.id) closeFibPanel(); // the panel belongs to the Fib that was selected
+    if (!d || pointEditorId() !== d.id) closePointEditor();
+    else refreshPointEditor(d); // dragged or edited: show the new values
     if (!d) return;
     bar.querySelectorAll('[data-color]').forEach((b) => b.classList.toggle('on', b.dataset.color === d.color));
     const text = bar.querySelector('.db-text');
-    text.hidden = d.type !== 'text';
-    if (d.type === 'text' && document.activeElement !== text) text.value = d.text || '';
+    const symbol = isSymbol(d.type);
+    text.hidden = d.type !== 'text' && !symbol;
+    if ((d.type === 'text' || symbol) && document.activeElement !== text) text.value = d.text || '';
+    const size = bar.querySelector('.db-size');
+    size.hidden = !symbol;
+    if (symbol) {
+      const range = size.querySelector('input');
+      if (document.activeElement !== range) range.value = d.size ?? SYMBOL_SIZE.default;
+      size.querySelector('output').textContent = `${d.size ?? SYMBOL_SIZE.default}px`;
+    }
+    if (symbol && this.drawings.focusText) { // just placed: type its label straight away
+      this.drawings.focusText = false;
+      requestAnimationFrame(() => { text.focus(); });
+    }
+    const stroke = bar.querySelector('.db-stroke');
+    stroke.hidden = !STROKE_TOOLS.has(d.type);
+    if (!stroke.hidden) {
+      const { style, width } = strokeOf(d);
+      stroke.querySelectorAll('[data-stroke]').forEach((b) => b.classList.toggle('on', b.dataset.stroke === style));
+      const input = stroke.querySelector('input');
+      if (document.activeElement !== input) input.value = width;
+    }
     bar.querySelector('[data-db="alert"]').hidden = !(d.type === 'hline' || d.type === 'hray');
     bar.querySelector('.db-colors').hidden = ['fib', 'long', 'short', 'measure'].includes(d.type);
+    const labels = bar.querySelector('[data-db="labels"]');
+    labels.hidden = !['long', 'short', 'avwap'].includes(d.type); // a Fib's labels are in its settings
+    bar.querySelector('[data-db="fib"]').hidden = d.type !== 'fib';
+    bar.querySelector('[data-db="edit"]').hidden = !editablePoints(d).length;
+    const shown = d.labels !== false;
+    labels.classList.toggle('on', shown);
+    labels.title = t(shown ? 'chart.labelsHide' : 'chart.labelsShow');
+    labels.setAttribute('aria-pressed', String(shown));
   }
 
   // --- main series -------------------------------------------------------------
@@ -643,18 +765,17 @@ export class ChartView {
     const first = entry.series[0]?.api;
     if (!first) return;
     if (def.scale === 'volume') c.priceScale('volume', 0).applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-    (def.levels || []).forEach((level, k) => {
-      first.createPriceLine({
-        price: level, color: def.levelColors?.[k] || THEMES[currentTheme].level,
-        lineWidth: 1, lineStyle: LWC.LineStyle.Dashed, axisLabelVisible: false,
-      });
-    });
+    entry.levelLines = (def.levels || []).map((level, k) => first.createPriceLine({
+      price: level, color: def.levelColors?.[k] || THEMES[currentTheme].level,
+      lineWidth: 1, lineStyle: LWC.LineStyle.Dashed, axisLabelVisible: false,
+    }));
     if (!def.overlay) first.getPane().setStretchFactor(0.3);
     entry.fillPrims = (def.fills || []).map((f) => {
       const prim = new BandFill(() => this.fillArrays(entry, f), f);
       first.attachPrimitive(prim);
       return { prim, target: first };
     });
+    if (isHidden(inst)) applyEntryVisibility(entry); // hidden with the eye button: stays hidden when rebuilt
   }
 
   fillArrays(entry, f) {
@@ -671,6 +792,7 @@ export class ChartView {
     try {
       for (const { prim, target } of entry.fillPrims || []) { try { target.detachPrimitive(prim); } catch { /* gone */ } }
       entry.fillPrims = [];
+      entry.levelLines = [];
       try { entry.markersApi?.detach(); } catch { /* gone */ }
       entry.markersApi = null;
       try { entry.tradeMarkers?.detach(); } catch { /* gone */ }
@@ -805,11 +927,12 @@ export class ChartView {
         entry.markersTarget = target;
       }
       // In bar order (script-sanitize.js sorts them) and never past the bars this run had.
-      entry.markersApi.setMarkers(res.markers.filter((m) => times[m.i] != null)
-        .map((m) => ({ time: times[m.i], position: m.position, shape: m.shape, color: m.color, text: m.text })));
-    } else if (entry.markersApi) {
-      entry.markersApi.setMarkers([]);
+      entry.markerData = res.markers.filter((m) => times[m.i] != null)
+        .map((m) => ({ time: times[m.i], position: m.position, shape: m.shape, color: m.color, text: m.text }));
+    } else {
+      entry.markerData = [];
     }
+    syncMarkers(entry);
     if (res.strategy) this.applyStrategy(entry, res.strategy, times);
     if (structural || forceLegend) this.buildLegend();
     else this.updateLegend(this.lastCrosshair);
@@ -842,7 +965,9 @@ export class ChartView {
       return { time: times[m.i], position: long ? 'aboveBar' : 'belowBar', shape: long ? 'arrowDown' : 'arrowUp', color: '#E040FB', text: (Object.hasOwn(SHORT, m.reason) && SHORT[m.reason]) || m.reason };
     });
     markers.sort((a, b) => a.time - b.time);
-    entry.tradeMarkers.setMarkers(markers);
+    entry.tradeMarkerData = markers;
+    entry.tradeLines.setHidden(isHidden(entry.inst));
+    syncMarkers(entry);
     entry.tradeLineData = {
       trades: report.trades.map((t) => ({ ei: t.entryIndex, ep: t.entryPrice, xi: t.exitIndex, xp: t.exitPrice, win: t.pnl > 0 })),
     };
@@ -942,6 +1067,16 @@ export class ChartView {
     else { this.addBuiltinEntry(inst); this.buildLegend(); }
     this.hooks.onChange?.(this);
     return true;
+  }
+
+  /** The legend's eye button: hide or show an indicator on the chart without removing it. */
+  setIndicatorHidden(id, hidden) {
+    const entry = this.live.get(id);
+    if (!entry) return;
+    setHiddenFlag(entry.inst, hidden);
+    applyEntryVisibility(entry);
+    this.buildLegend();
+    this.hooks.onChange?.(this);
   }
 
   removeIndicator(id) {
@@ -1291,6 +1426,7 @@ export class ChartView {
     this.updateLegend(this.lastCrosshair);
     this.applyPaperMarkers();
     this.updateQuickTrade();
+    this.updateToLatest();
   }
 
   /**
@@ -1307,6 +1443,17 @@ export class ChartView {
       try { s.priceScale().applyOptions({ autoScale: true }); } catch { /* series without a scale */ }
     }
     this.chart.timeScale().setVisibleLogicalRange({ from: Math.max(-5, n - 150), to: n + 10 });
+  }
+
+  /** The "go to the latest candle" button: shown while the newest candle is off the right edge (issue #7). */
+  updateToLatest(range = this.chart.timeScale().getVisibleLogicalRange()) {
+    const btn = this.q('.to-latest');
+    const off = !!range && this.bars.length > 0 && !this.replay && range.to < this.bars.length - 1.5;
+    if (btn.hidden !== !off) btn.hidden = !off;
+    if (!off) return;
+    // Just inside the corner of the price pane: left of the price scale, above the time scale.
+    btn.style.right = `${(this.chart.priceScale('right').width() || 60) + 10}px`;
+    btn.style.bottom = `${(this.chart.timeScale().height() || 28) + 10}px`;
   }
 
   /** Start time of the bar that a tick at chart time t belongs to, given the last bar's start. */
@@ -1352,6 +1499,18 @@ export class ChartView {
   applyBars(newBars) {
     if (this.replay || !this.bars.length || !newBars?.length) return;
     const first = newBars[0].time;
+    // New bars that start long after the history ends mean the history was an old copy (issue #7):
+    // gluing them on would hide the missing weeks. Load the history again instead (once per
+    // symbol and timeframe every 10 minutes, in case the source keeps sending the old copy).
+    const gap = first - this.bars[this.bars.length - 1].time;
+    if (gap > Math.max(10 * 86400, 50 * this.tf.sec)) {
+      const key = `${this.state.symbol}|${this.tf.id}`;
+      if (this.gapReload?.key !== key || Date.now() - this.gapReload.t > 600000) {
+        this.gapReload = { key, t: Date.now() };
+        this.load();
+        return;
+      }
+    }
     const lastNew = newBars[newBars.length - 1].time;
     const times = new Set(newBars.map((b) => b.time));
 
@@ -1767,11 +1926,13 @@ export class ChartView {
     }
     for (const entry of this.live.values()) {
       const row = document.createElement('div');
-      row.className = 'lg-row';
+      const hidden = isHidden(entry.inst);
+      row.className = hidden ? 'lg-row off' : 'lg-row';
       row.dataset.id = entry.inst.id;
       row.innerHTML = `<span class="lg-name">${esc(this.entryLabel(entry))}</span>
         <span class="lg-vals">${entry.error ? `<span class="lg-err">⚠ ${esc(entry.error)}</span>` : ''}</span>
         <span class="lg-actions">
+          <button data-act="eye" title="${t(hidden ? 'chart.indShow' : 'chart.indHide')}" aria-label="${t(hidden ? 'chart.indShow' : 'chart.indHide')}" aria-pressed="${!hidden}">${hidden ? ICON_EYE_OFF : ICON_EYE}</button>
           ${entry.script ? `<button data-act="code" title="${t('chart.editScript')}" aria-label="${t('chart.editScript')}">${ICON_CODE}</button>` : ''}
           <button data-act="settings" title="${t('common.settings')}" aria-label="${t('common.settings')}">${ICON_GEAR}</button>
           <button data-act="remove" title="${t('common.remove')}" aria-label="${t('common.remove')}">${ICON_X}</button>
@@ -1835,6 +1996,7 @@ export class ChartView {
 
     for (const entry of this.live.values()) {
       if (!entry.row || !entry.out || entry.error) continue;
+      if (isHidden(entry.inst)) { entry.row.querySelector('.lg-vals').innerHTML = ''; continue; }
       const k = Math.min(i, (entry.outLen ?? bars.length) - 1);
       let html = entry.series.map(({ plot }) => {
         const v = entry.out[plot.key]?.[k];

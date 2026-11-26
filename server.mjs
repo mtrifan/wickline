@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { fetchUsList } from './lib/market-lists.mjs';
-import { cleanSpikes } from './lib/clean-bars.mjs';
+import { cleanSpikes, fixFxDailyCloses, isStaleHistory, spliceFreshTail } from './lib/clean-bars.mjs';
 import { technicals, buildRow, insights } from './lib/screener.mjs';
 import { parseFeed, buildNameIndex, buildStories, rankStories, CRYPTO } from './lib/news.mjs';
 import { parseFomc, shapeEcon, shapeEarnings } from './lib/calendar.mjs';
@@ -172,6 +172,8 @@ function normalizeChart(json, tfCfg) {
 
   // Bad prints (mostly pre-market / after-hours) would squash the chart; clip them.
   if (!tfCfg.daily) bars = cleanSpikes(bars);
+  // Daily forex bars come with each finished day's close equal to its open: rebuild the closes.
+  if (tfCfg.interval === '1d' && m.instrumentType === 'CURRENCY') fixFxDailyCloses(bars);
 
   // Grouped timeframes restart at each session's open (from Yahoo's trading periods; a day they
   // don't cover starts at its first bar). The chart starts live bars of a new session there too.
@@ -222,7 +224,33 @@ async function yahooChart(symbol, tf, live, prepost = false) {
   const json = await yahooGet(`/v8/finance/chart/${encodeURIComponent(symbol)}?${params}`, live ? 8000 : 60000);
   const out = normalizeChart(json, { ...cfg, prepost: prepost && !cfg.daily });
   if (fromMinutes && !out.bars.length && out.meta.type === 'OPTION') return { ...out, bars: (await minutes()).bars };
+  if (!live && !cfg.aggregate) return freshenTail(symbol, cfg, json, out, prepost);
   return out;
+}
+
+/**
+ * Yahoo sometimes answers a long history with an old copy that ends weeks or months back, while the
+ * market has traded since (issue #7: MSFT daily ending in 2025). The live refresh then glued this
+ * week's bars straight onto it. When the last bar is well behind the latest trade, fetch the recent
+ * part on its own (a different request, so a fresh copy) and put it in place of the old tail.
+ */
+async function freshenTail(symbol, cfg, json, out, prepost) {
+  const marketTime = json?.chart?.result?.[0]?.meta?.regularMarketTime;
+  const last = out.bars[out.bars.length - 1];
+  if (!last) return out;
+  const lastUtc = last.time - (out.meta.tzOffset || 0);
+  if (!isStaleHistory(lastUtc, marketTime, cfg.spacing)) return out;
+  try {
+    const p = new URLSearchParams({
+      interval: cfg.interval, includePrePost: prepost && !cfg.daily ? 'true' : 'false',
+      period1: String(Math.floor(lastUtc - 10 * DAY)), period2: String(Math.floor(Date.now() / 60000) * 60),
+    });
+    const fresh = normalizeChart(await yahooGet(`/v8/finance/chart/${encodeURIComponent(symbol)}?${p}`, 60000), { ...cfg, prepost: prepost && !cfg.daily });
+    if (!fresh.bars.length || fresh.bars[fresh.bars.length - 1].time <= last.time) return out;
+    return { ...out, bars: spliceFreshTail(out.bars, fresh.bars) };
+  } catch {
+    return out; // the old copy is still better than nothing; the chart refuses to glue across the gap
+  }
 }
 
 /** Last price, previous close and name for many symbols (Yahoo's spark endpoint, 20 per request). */

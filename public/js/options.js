@@ -32,12 +32,72 @@ export function timeLeft(at, now = Date.now()) {
   return h < 24 ? t('opt.hours', { n: Math.max(1, Math.round(h)) }) : t('opt.days', { n: daysLeft(at, now) });
 }
 
-/** An expiry for the menu: "Fri, Dec 4 · 11d" ("Dec 17, 2027 · 389d" in another year). */
-export function expiryLabel(e, now = Date.now()) {
+const ICON_DOWN = '<svg class="op-exp-caret" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const DAY_S = 86400;
+const utcDay = (t) => new Date(t * 1000).toISOString().slice(0, 10);
+
+/**
+ * Whether an expiry is a monthly, a weekly or (Deribit only) a daily, in each venue's own terms.
+ * Stocks: the monthly is the month's third Friday and every other expiry is a weekly (exchanges list
+ * SPY's Monday and Wednesday expiries as Weeklys too). Deribit: the monthly is the month's last Friday,
+ * other Fridays are weeklies, other days dailies. When a Friday is a market holiday the expiry moves to
+ * the Thursday before, so a Thursday whose Friday isn't listed counts as that Friday.
+ */
+export function expiryKind(e, expiries = [], source = 'yahoo') {
+  let d = new Date(e.t * 1000);
+  if (d.getUTCDay() === 4) {
+    const fri = utcDay(e.t + DAY_S);
+    if (!expiries.some((x) => utcDay(x.t) === fri)) d = new Date((e.t + DAY_S) * 1000);
+  }
+  if (d.getUTCDay() !== 5) return source === 'deribit' ? 'daily' : 'weekly';
+  const day = d.getUTCDate();
+  const monthEnd = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+  const monthly = source === 'deribit' ? day + 7 > monthEnd : day >= 15 && day <= 21;
+  return monthly ? 'monthly' : 'weekly';
+}
+
+/** An expiry for the menu: "Fri, Dec 4 · 11d" ("Dec 17, 2027 · 389d" in another year), plus "· Monthly" etc. when kind is given. */
+export function expiryLabel(e, now = Date.now(), kind = null) {
   const d = new Date(e.t * 1000);
   const other = d.getUTCFullYear() !== new Date(now).getUTCFullYear();
   const date = d.toLocaleDateString(locale, { timeZone: 'UTC', weekday: other ? undefined : 'short', month: 'short', day: 'numeric', year: other ? 'numeric' : undefined });
-  return `${date} · ${timeLeft(e.at, now)}`;
+  return `${date} · ${timeLeft(e.at, now)}${kind ? ` · ${t(`opt.kind.${kind}`)}` : ''}`;
+}
+
+/** The expiry button: "Fri, Dec 18 · 24d" with an M / W / D badge. */
+export function expiryButton(d, now = Date.now()) {
+  const e = d.expiries.find((x) => x.t === d.expiry) || d.expiries[0];
+  if (!e) return '';
+  const kind = expiryKind(e, d.expiries, d.source);
+  return `<span>${esc(expiryLabel(e, now))}</span><i class="op-kind op-${kind}" title="${esc(t(`opt.kind.${kind}`))}">${esc(t(`opt.kind.short.${kind}`))}</i>`;
+}
+
+/**
+ * The expiry menu: the expiries under their month ("December", "January 2027"), each row "Fri 18 · M · 24d",
+ * and a key at the bottom ("M Monthly · W Weekly"). Monthlies stand out, dailies step back, the picked one is marked.
+ */
+export function expiryMenu(d, now = Date.now()) {
+  const year = new Date(now).getUTCFullYear();
+  const kinds = new Set();
+  let month = '';
+  const rows = d.expiries.map((e) => {
+    const dt = new Date(e.t * 1000);
+    const kind = expiryKind(e, d.expiries, d.source);
+    kinds.add(kind);
+    const m = `${dt.getUTCFullYear()}-${dt.getUTCMonth()}`;
+    let head = '';
+    if (m !== month) {
+      month = m;
+      head = `<div class="menu-title">${esc(dt.toLocaleDateString(locale, { timeZone: 'UTC', month: 'long', year: dt.getUTCFullYear() !== year ? 'numeric' : undefined }))}</div>`;
+    }
+    const on = e.t === d.expiry;
+    const day = `${dt.toLocaleDateString(locale, { timeZone: 'UTC', weekday: 'short' })} ${dt.getUTCDate()}`;
+    return `${head}<button class="op-exp-row op-${kind}${on ? ' on' : ''}" role="option" aria-selected="${on}" data-exp="${e.t}" title="${esc(expiryLabel(e, now, kind))}">`
+      + `<span>${esc(day)}</span><i class="op-kind op-${kind}">${esc(t(`opt.kind.short.${kind}`))}</i><small>${esc(timeLeft(e.at, now))}</small></button>`;
+  }).join('');
+  const key = ['monthly', 'weekly', 'daily'].filter((k) => kinds.has(k))
+    .map((k) => `<span><i class="op-kind op-${k}">${esc(t(`opt.kind.short.${k}`))}</i>${esc(t(`opt.kind.${k}`))}</span>`).join('');
+  return `${rows}<div class="op-exp-key">${key}</div>`;
 }
 
 /** A price: "1.25", "0.07", "23,397" (no cents from 10,000, or from 1,000 when compact). */
@@ -114,7 +174,26 @@ export class OptionsPanel {
 
     this.el.querySelector('#op-close').addEventListener('click', () => this.close());
     this.el.addEventListener('click', (e) => this.onClick(e));
-    this.el.addEventListener('change', (e) => this.onChange(e));
+    this.menu = document.createElement('div');
+    this.menu.className = 'menu op-exp-menu';
+    this.menu.setAttribute('role', 'listbox');
+    this.menu.hidden = true;
+    document.body.append(this.menu);
+    this.menu.addEventListener('click', (e) => {
+      const row = e.target.closest('.op-exp-row');
+      if (row) this.pickExpiry(Number(row.dataset.exp));
+    });
+    this.menu.addEventListener('keydown', (e) => this.onMenuKey(e));
+    this.el.querySelector('#op-tools').addEventListener('keydown', (e) => {
+      if (!e.target.closest('.op-exp-btn') || !['ArrowDown', 'ArrowUp'].includes(e.key)) return;
+      e.preventDefault();
+      e.stopPropagation(); // not the chart's arrow-key shortcuts
+      this.openMenu();
+    });
+    document.addEventListener('mousedown', (e) => {
+      if (!this.menu.hidden && !this.menu.contains(e.target) && !e.target.closest('.op-exp-btn')) this.closeMenu();
+    });
+    window.addEventListener('resize', () => this.closeMenu());
     this.body.addEventListener('mouseover', (e) => this.onHover(e));
     this.body.addEventListener('mousemove', (e) => { if (e.target.tagName === 'CANVAS') this.onChartHover(e); });
     this.body.addEventListener('mouseleave', () => { this.tip.hidden = true; });
@@ -196,6 +275,7 @@ export class OptionsPanel {
   }
 
   close() {
+    this.closeMenu();
     this.el.hidden = true;
     this.tip.hidden = true;
     document.body.classList.remove('options-open');
@@ -225,6 +305,7 @@ export class OptionsPanel {
   }
 
   clearTools() {
+    this.closeMenu();
     $('#op-tools').innerHTML = '';
     $('#op-src').textContent = '';
     this.toolsKey = '';
@@ -292,15 +373,61 @@ export class OptionsPanel {
     this.body.innerHTML = `<div class="st-empty op-none"><b>${esc(t('opt.none', { symbol: this.symbol.replace(/^[A-Z]+:/, '') }))}</b><span>${esc(msg)}</span></div>`;
   }
 
-  onChange(e) {
-    if (e.target.dataset.f !== 'expiry') return;
-    this.expiry = Number(e.target.value);
+  openMenu() {
+    const btn = this.el.querySelector('.op-exp-btn');
+    if (!btn || !this.data) return;
+    this.menu.innerHTML = expiryMenu(this.data);
+    this.menu.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+    const r = btn.getBoundingClientRect();
+    const below = innerHeight - r.bottom - 12, above = r.top - 12;
+    const up = below < 260 && above > below; // the panel sits low on the screen: open upwards if there's more room
+    this.menu.style.maxHeight = `${Math.min(440, up ? above : below)}px`;
+    this.menu.style.left = `${Math.max(8, Math.min(r.left, innerWidth - this.menu.offsetWidth - 8))}px`;
+    this.menu.style.top = up ? `${r.top - 4 - this.menu.offsetHeight}px` : `${r.bottom + 4}px`;
+    const on = this.menu.querySelector('.op-exp-row.on') || this.menu.querySelector('.op-exp-row');
+    if (on) {
+      this.menu.scrollTop = on.offsetTop - (this.menu.clientHeight - on.offsetHeight) / 2;
+      on.focus({ preventScroll: true });
+    }
+  }
+
+  closeMenu(refocus = false) {
+    if (!this.menu || this.menu.hidden) return;
+    this.menu.hidden = true;
+    const btn = this.el.querySelector('.op-exp-btn');
+    btn?.setAttribute('aria-expanded', 'false');
+    if (refocus) btn?.focus();
+  }
+
+  /** Up/Down move through the expiries, Enter picks one, Esc closes. */
+  onMenuKey(e) {
+    e.stopPropagation(); // the chart's shortcuts don't apply in here
+    const rows = [...this.menu.querySelectorAll('.op-exp-row')];
+    const i = rows.indexOf(document.activeElement);
+    const go = (j) => { e.preventDefault(); rows[Math.max(0, Math.min(rows.length - 1, j))]?.focus(); };
+    if (e.key === 'ArrowDown') go(i + 1);
+    else if (e.key === 'ArrowUp') go(i - 1);
+    else if (e.key === 'Home') go(0);
+    else if (e.key === 'End') go(rows.length - 1);
+    else if ((e.key === 'Enter' || e.key === ' ') && rows[i]) { e.preventDefault(); this.pickExpiry(Number(rows[i].dataset.exp)); }
+    else if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); this.closeMenu(true); }
+  }
+
+  /** An expiry was picked from the menu: show it on the button at once, then load its chain. */
+  pickExpiry(at) {
+    this.closeMenu(true);
+    if (!this.data || at === this.data.expiry) return;
+    this.expiry = at;
     this.tip.hidden = true;
+    const btn = this.el.querySelector('.op-exp-btn');
+    if (btn) { btn.innerHTML = expiryButton({ ...this.data, expiry: at }) + ICON_DOWN; btn.dataset.exp = at; }
     this.load();
   }
 
   onClick(e) {
     if (e.target.closest('[data-op-retry]')) { this.showLoading(); this.load(); return; }
+    if (e.target.closest('.op-exp-btn')) { if (this.menu.hidden) this.openMenu(); else this.closeMenu(); return; }
     const pick = e.target.closest('[data-op-chart]');
     if (pick) { this.pick(pick.dataset.opChart); return; }
     const td = e.target.closest('td[data-side]');
@@ -321,11 +448,13 @@ export class OptionsPanel {
     const now = Date.now();
     $('#op-symbol').textContent = u.symbol;
     const toolsKey = [this.symbol, d.expiry, ...d.expiries.map((e) => `${e.t}:${timeLeft(e.at, now)}`)].join('|');
-    if (toolsKey !== this.toolsKey || !$('#op-tools select')) { // unchanged: don't rebuild (and close) an open menu
+    if (toolsKey !== this.toolsKey || !$('#op-tools .op-exp-btn')) {
+      const hadFocus = document.activeElement?.closest?.('.op-exp-btn');
       this.toolsKey = toolsKey;
-      $('#op-tools').innerHTML = `<select class="select" data-f="expiry" aria-label="${esc(t('opt.expiry'))}" title="${esc(t('opt.expiryTip'))}">${d.expiries.map((e) =>
-        `<option value="${e.t}"${e.t === d.expiry ? ' selected' : ''}>${esc(expiryLabel(e, now))}</option>`).join('')}</select>
+      $('#op-tools').innerHTML = `<button class="select op-exp-btn" data-exp="${d.expiry}" aria-haspopup="listbox" aria-expanded="${!this.menu.hidden}" aria-label="${esc(t('opt.expiry'))}" title="${esc(t('opt.expiryTip'))}">${expiryButton(d, now)}${ICON_DOWN}</button>
         <span class="muted op-count">${esc(t('opt.expiries', { n: d.expiries.length }))}</span>`;
+      if (!this.menu.hidden) this.menu.innerHTML = expiryMenu(d, now); // it's open while the data updated
+      if (hadFocus) $('#op-tools .op-exp-btn').focus(); // redrawn: keep the keyboard where it was
     }
     const src = $('#op-src');
     src.className = `op-src ${d.delayed ? 'muted' : 'op-live'}`;

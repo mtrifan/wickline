@@ -12,6 +12,7 @@
     "appearance": { "policy": "lww" },
     "lang": { "policy": "lww", "note": "written directly by i18n.js; removeItem means follow the system" },
     "tfFavorites": { "policy": "lww" },
+    "magnet": { "policy": "lww", "note": "drawing magnet mode (off/weak/strong), upstream 0.1.11" },
     "extHours": { "policy": "lww" },
     "screener": { "policy": "lww" },
     "news": { "policy": "lww" },

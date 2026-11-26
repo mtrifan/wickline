@@ -2,6 +2,7 @@
 //  BINANCE   crypto spot          — direct from the browser; every trade over WebSocket
 //  BINANCEF  crypto perpetuals    — Binance USDⓈ-M futures, same as above
 //  COINBASE  crypto spot (USD)    — direct from the browser; every trade over WebSocket
+//  BYBIT, BYBITF, OKX, OKXF  Bybit and OKX spot and perpetuals — see crypto-exchanges.js
 //  YAHOO     stocks, ETFs, funds, indices, forex, futures, bonds — Yahoo through the optional
 //            server, or Twelve Data (visitor's free key) + Yahoo's live stream on a static site
 
@@ -11,6 +12,7 @@ import { tdBars, tdSearch, tdQuotes } from './twelvedata.js';
 import { store } from './util.js';
 import { t } from './i18n.js';
 import { tfById, basePlan, aggregateUtc, groupBars, utcBucket, sessionStart } from './timeframes.js';
+import { EXCHANGE_SOURCES, isExchangeSource, ExchangeFeed, exchangeMarket, exchangeList, streamExchangeQuotes } from './crypto-exchanges.js';
 
 // Any timeframe works (see timeframes.js); these are the ones the app has always had.
 export const TIMEFRAMES = ['1m', '5m', '15m', '30m', '1h', '2h', '4h', '1D', '1W', '1M'].map(tfById);
@@ -20,6 +22,7 @@ export const SOURCES = {
   BINANCE: { name: 'Binance', crypto: true },
   BINANCEF: { name: 'Binance Futures', crypto: true, suffix: '.P' },
   COINBASE: { name: 'Coinbase', crypto: true },
+  ...EXCHANGE_SOURCES,
   YAHOO: { name: 'Yahoo Finance', crypto: false },
 };
 
@@ -65,7 +68,7 @@ async function getJson(url) {
 // ---------------------------------------------------------------------------
 
 /** "BTC / USDT", or "BTC / USDT perpetual" for Binance futures (in the UI language). */
-const pairName = (src, base, quote) => (src === 'BINANCEF' ? t('feed.perpName', { base, quote }) : `${base} / ${quote}`);
+const pairName = (src, base, quote) => (SOURCES[src]?.suffix ? t('feed.perpName', { base, quote }) : `${base} / ${quote}`);
 
 const BINANCE = {
   BINANCE: {
@@ -629,6 +632,7 @@ export function createFeed(symbol, tf) {
   const { source, ticker } = parseSymbol(symbol);
   if (source === 'BINANCE' || source === 'BINANCEF') return new BinanceFeed(source, ticker, tf);
   if (source === 'COINBASE') return new CoinbaseFeed(ticker, tf);
+  if (isExchangeSource(source)) return new ExchangeFeed(source, ticker, tf);
   return new YahooFeed(ticker, tf);
 }
 
@@ -666,6 +670,7 @@ export function warmSymbolLists() {
   binanceList('BINANCE').catch(() => {});
   binanceList('BINANCEF').catch(() => {});
   coinbaseList().catch(() => {});
+  for (const src of Object.keys(EXCHANGE_SOURCES)) exchangeList(src).catch(() => {});
 }
 
 async function searchList(src, list, q, limit) {
@@ -688,7 +693,7 @@ async function searchList(src, list, q, limit) {
     ticker: s.ticker + (SOURCES[src].suffix || ''),
     name: pairName(src, s.base, s.quote || '?'),
     exchange: SOURCES[src].name,
-    type: src === 'BINANCEF' ? 'Crypto perpetual' : 'Crypto',
+    type: SOURCES[src].suffix ? 'Crypto perpetual' : 'Crypto',
     category: 'crypto',
   }));
 }
@@ -699,6 +704,7 @@ export async function searchCrypto(query, limit = 6) {
     searchList('BINANCE', binanceList('BINANCE'), query, limit),
     searchList('BINANCEF', binanceList('BINANCEF'), query, limit),
     searchList('COINBASE', coinbaseList(), query, limit),
+    ...Object.keys(EXCHANGE_SOURCES).map((src) => searchList(src, exchangeList(src), query, Math.min(limit, 4))),
   ]);
   return settled.flatMap((s) => (s.status === 'fulfilled' ? s.value : []));
 }
@@ -727,7 +733,7 @@ export async function searchYahoo(query) {
 
 /**
  * Every instrument of a market, with last price and change:
- *  us-stocks (all US-listed stocks), us-etfs, binance, binancef, coinbase.
+ *  us-stocks (all US-listed stocks), us-etfs, binance, binancef, coinbase, bybit, bybitf, okx, okxf.
  * Returns [{ full, ticker, name, price, change, rank, sector }]; rank = popularity (higher first).
  */
 export async function loadUniverse(id) {
@@ -773,6 +779,13 @@ export async function loadUniverse(id) {
           rank: (+s.volume || 0) * (last || 0) * (p.quote_currency === 'USD' ? 1 : 0.5), sector: p.quote_currency,
         };
       });
+    }
+    case 'bybit': case 'bybitf': case 'okx': case 'okxf': {
+      const src = id.toUpperCase();
+      return (await exchangeMarket(src)).map((r) => ({
+        full: `${src}:${r.ticker}`, ticker: r.ticker + (SOURCES[src].suffix || ''), name: pairName(src, r.base, r.quote),
+        price: r.price, change: r.change, rank: r.rank, sector: r.quote || t('feed.otherSector'),
+      }));
     }
     default:
       throw new Error(`Unknown market ${id}`);
@@ -826,6 +839,7 @@ export class QuoteStream {
     }
     for (const src of ['BINANCE', 'BINANCEF']) if (by[src]) this.startBinance(src, by[src], gen);
     if (by.COINBASE) this.startCoinbase(by.COINBASE, gen);
+    for (const src of Object.keys(EXCHANGE_SOURCES)) if (by[src]) streamExchangeQuotes(this, src, by[src], gen);
     const yahoo = Object.entries(by).filter(([k]) => !SOURCES[k]?.crypto).flatMap(([, v]) => v);
     if (yahoo.length) this.startYahoo(yahoo, gen);
   }
