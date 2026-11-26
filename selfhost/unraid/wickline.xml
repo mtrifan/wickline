@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>wickline</Name>
-  <Repository>ghcr.io/mtrifan/wickline:edge</Repository>
+  <Repository>ghcr.io/mtrifan/wickline:stable</Repository>
   <Registry>https://github.com/mtrifan/wickline/pkgs/container/wickline</Registry>
   <Network>bridge</Network>
   <MyIP/>
@@ -20,7 +20,7 @@
   <DateInstalled/>
   <DonateText/>
   <DonateLink/>
-  <Requires>Generate WICKLINE_PASSWORD_HASH first: docker run --rm -it ghcr.io/mtrifan/wickline:edge node selfhost/cli.mjs hash-password</Requires>
+  <Requires>Generate WICKLINE_PASSWORD_HASH first: docker run --rm -it ghcr.io/mtrifan/wickline:stable node selfhost/cli.mjs hash-password</Requires>
   <Config Name="WebUI port" Target="5173" Default="5173" Mode="tcp" Description="Port for the web interface." Type="Port" Display="always" Required="true" Mask="false">5173</Config>
   <Config Name="Data" Target="/data" Default="/mnt/user/appdata/wickline" Mode="rw" Description="Database, backups. Must be writable by UID 99 (nobody:users, the Unraid default)." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/wickline</Config>
   <Config Name="Password hash" Target="WICKLINE_PASSWORD_HASH" Default="" Mode="" Description="Output of: node selfhost/cli.mjs hash-password (starts with scrypt$)." Type="Variable" Display="always" Required="true" Mask="true"/>
