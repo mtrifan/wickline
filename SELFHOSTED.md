@@ -6,14 +6,14 @@ An unofficial, self-hosted edition of [Wickline](https://github.com/keptaduona/w
 - **sync across devices**: watchlists, layouts, drawings, custom indicators, alerts and preferences, with daily backups;
 - **background price alerts** checked on the server around the clock (Yahoo, Binance, Coinbase), with one Gotify push notification per alert, even with no browser open.
 
-> **Status:** login, sync, backups and server-side alerts are complete and in daily use. Images are published as `ghcr.io/mtrifan/wickline:edge`; the Unraid template and the examples below use `:edge` until the first tagged release brings versioned images and `:stable`. The roadmap is in [the plan](selfhost/docs/PLAN.md).
+> **Status:** login, sync, backups and server-side alerts are complete and in daily use. The current release is **0.1.9-sh.1**: use `ghcr.io/mtrifan/wickline:stable` (follows approved releases) or pin `:0.1.9-sh.1`. `:edge` follows every change and is for testing. See [UPGRADE.md](UPGRADE.md) for tags, upgrades and rollback.
 
 ## Install
 
 You need a **password hash**, not the password itself. Run this anywhere Docker is available, type the password twice (12+ characters), and copy the output, which starts with `scrypt$`:
 
 ```sh
-docker run --rm -it ghcr.io/mtrifan/wickline:edge node selfhost/cli.mjs hash-password
+docker run --rm -it ghcr.io/mtrifan/wickline:stable node selfhost/cli.mjs hash-password
 ```
 
 ### Unraid
@@ -34,6 +34,8 @@ docker run --rm -it ghcr.io/mtrifan/wickline:edge node selfhost/cli.mjs hash-pas
 
 To update, click the container's icon → **Force update** (or use the update the Docker tab offers). Your data in `/mnt/user/appdata/wickline` is kept.
 
+Installed before the first release? Your container still uses `:edge`. Click its icon → **Edit**, change **Repository** to `ghcr.io/mtrifan/wickline:stable`, and **Apply**. Your settings and data stay.
+
 **Do not run the `wget` command again after installing.** Unraid saves your values (password hash, TOTP secret, Gotify token) in that same `my-wickline.xml`, so downloading over it wipes them. When a release adds a setting you want, open the container's **Edit** page and use *Add another Path, Port, Variable, Label or Device* to add it by name (the variables are listed under [Configuration](#configuration)).
 
 ### Docker Compose
@@ -42,7 +44,7 @@ To update, click the container's icon → **Force update** (or use the update th
 mkdir -p wickline/data wickline/secrets && cd wickline
 sudo chown 99:100 data                     # the container runs as UID 99
 curl -fsSLO https://raw.githubusercontent.com/mtrifan/wickline/selfhosted/selfhost/docker-compose.yml
-docker run --rm -it ghcr.io/mtrifan/wickline:edge node selfhost/cli.mjs hash-password > secrets/password_hash
+docker run --rm -it ghcr.io/mtrifan/wickline:stable node selfhost/cli.mjs hash-password > secrets/password_hash
 chmod 644 secrets/password_hash
 docker compose up -d
 ```
@@ -56,7 +58,7 @@ docker run -d --name wickline --restart unless-stopped --init \
   -p 5173:5173 -v /srv/wickline:/data \
   -e 'WICKLINE_PASSWORD_HASH=scrypt$…' \
   --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
-  ghcr.io/mtrifan/wickline:edge
+  ghcr.io/mtrifan/wickline:stable
 ```
 
 Use single quotes around the hash.
