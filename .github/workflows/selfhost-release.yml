@@ -1,0 +1,148 @@
+# Releases (PLAN §5.4). Pushing a tag sh-v<upstream>-<revision> on the production branch:
+#   1. checks the tag against package.json (upstream version) and selfhost/VERSION (revision), that it
+#      is on `selfhosted`, that CHANGELOG-SELFHOSTED.md has its section, and that the image tag does
+#      not exist yet (release tags are immutable);
+#   2. runs the full suite (selfhost-ci) and the container smoke test (selfhost-docker);
+#   3. publishes :<upstream>-sh.<revision> (immutable), :<upstream> and :sha-<short>, multi-arch with
+#      SBOM and provenance, and a GitHub release with the changelog section;
+#   4. after approval in the `production` environment, points :stable and :latest at that image
+#      (a retag of the same digest, no rebuild). :edge and :experimental never move :latest.
+name: selfhost-release
+
+on:
+  push:
+    tags: ['sh-v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: selfhost-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/wickline
+
+jobs:
+  check:
+    name: check the release tag
+    runs-on: ubuntu-latest
+    outputs:
+      upstream: ${{ steps.v.outputs.upstream }}
+      revision: ${{ steps.v.outputs.revision }}
+      version: ${{ steps.v.outputs.version }}
+      sha: ${{ steps.v.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Tag, versions and changelog
+        id: v
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^sh-v([0-9]+\.[0-9]+\.[0-9]+)-([1-9][0-9]*)$ ]] || { echo "::error::$TAG is not sh-v<X.Y.Z>-<N>"; exit 1; }
+          upstream="${BASH_REMATCH[1]}"; revision="${BASH_REMATCH[2]}"
+          pkg=$(node -p "require('./package.json').version")
+          rev=$(tr -d '[:space:]' < selfhost/VERSION)
+          [ "$pkg" = "$upstream" ] || { echo "::error::the tag says upstream $upstream, package.json says $pkg"; exit 1; }
+          [ "$rev" = "$revision" ] || { echo "::error::the tag says revision $revision, selfhost/VERSION says $rev"; exit 1; }
+          git fetch --no-tags origin selfhosted
+          git merge-base --is-ancestor HEAD origin/selfhosted || { echo "::error::$TAG is not on the selfhosted branch"; exit 1; }
+          awk -v t="$TAG" '$1 == "##" && $2 == t { found = 1 } END { exit !found }' CHANGELOG-SELFHOSTED.md \
+            || { echo "::error::CHANGELOG-SELFHOSTED.md has no '## $TAG' section"; exit 1; }
+          { echo "upstream=$upstream"; echo "revision=$revision"; echo "version=$upstream-sh.$revision"; echo "sha=$(git rev-parse --short HEAD)"; } >> "$GITHUB_OUTPUT"
+      - name: The image tag must not exist yet
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          if docker buildx imagetools inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            echo "::error::$IMAGE:$VERSION already exists; release tags are immutable. Bump selfhost/VERSION and tag again."
+            exit 1
+          fi
+
+  tests:
+    name: full suite
+    needs: check
+    uses: ./.github/workflows/selfhost-ci.yml
+
+  image:
+    name: container
+    needs: check
+    uses: ./.github/workflows/selfhost-docker.yml
+
+  publish:
+    name: publish the release image
+    needs: [check, tests, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # the GitHub release
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ needs.check.outputs.version }}
+            type=raw,value=${{ needs.check.outputs.upstream }}
+            type=raw,value=sha-${{ needs.check.outputs.sha }}
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: selfhost/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            UPSTREAM_VERSION=${{ needs.check.outputs.upstream }}
+            SELFHOST_REVISION=${{ needs.check.outputs.revision }}
+            GIT_SHA=${{ needs.check.outputs.sha }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+      - name: GitHub release with the changelog section
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          awk -v t="$TAG" '$1 == "##" && $2 == t { on = 1; next } on && /^## / { exit } on' CHANGELOG-SELFHOSTED.md > notes.md
+          printf '\n**Image:** `%s:%s` (also `:%s`). `:stable` moves after approval.\n' "$IMAGE" "$VERSION" "${VERSION%-sh.*}" >> notes.md
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "Wickline Self-Hosted $VERSION" --notes-file notes.md --verify-tag
+
+  promote:
+    name: promote to stable
+    needs: [check, publish]
+    runs-on: ubuntu-latest
+    environment: production # requires the owner's approval
+    permissions:
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Point :stable and :latest at the release
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          docker buildx imagetools create --tag "$IMAGE:stable" --tag "$IMAGE:latest" "$IMAGE:$VERSION"
+          docker buildx imagetools inspect "$IMAGE:stable"

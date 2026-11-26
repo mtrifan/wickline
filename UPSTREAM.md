@@ -20,6 +20,21 @@ Upstream compatibility is a primary requirement. The rule that makes it cheap: *
 - `selfhost/VERSION` holds the revision. The upstream version comes from `package.json`.
 - Docker images: `ghcr.io/mtrifan/wickline:<upstream>-sh.<rev>` (immutable), `:<upstream>`, `:stable` / `:latest` (validated and approved), `:edge` (every push to `selfhosted`). See [UPGRADE.md](UPGRADE.md).
 
+## Cutting a release (`selfhost-release`)
+
+1. In a PR into `selfhosted`:
+   - set `selfhost/VERSION` to the next revision (back to `1` after an upstream version change);
+   - rename `## Unreleased` in `CHANGELOG-SELFHOSTED.md` to `## sh-v<upstream>-<revision> — <date>`, and start a new `## Unreleased` above it.
+2. Merge it, then tag the merge commit and push the tag:
+   ```sh
+   git switch selfhosted && git pull
+   git tag sh-v0.1.9-1 && git push origin sh-v0.1.9-1
+   ```
+3. The workflow checks the tag against `package.json`, `selfhost/VERSION` and the changelog, and checks it is on `selfhosted`. It runs the full suite and the container smoke test. Then it publishes `:<upstream>-sh.<revision>`, `:<upstream>` and `:sha-<short>`, and a GitHub release with the changelog section.
+4. **Approve** the `promote to stable` job in the run (the `production` environment). Only then do `:stable` and `:latest` move, as a retag of the same image.
+
+Release image tags are immutable: a tag whose image already exists fails the check, so fix forward with the next revision. Tag releases in order: `:<upstream>` follows the last release published.
+
 ## Automated synchronisation (`selfhost-upstream-sync`, daily 05:17 UTC)
 
 The workflow runs `prepare`, three validation jobs, and `publish`, so new upstream code never runs where a write token exists.
