@@ -147,9 +147,12 @@ When an alert fires in an open Wickline tab, the server sends one notification f
 
 The server also checks alerts itself, with no browser open, using the same live Yahoo prices the app shows (stocks, ETFs, indices, futures, forex). It follows the app's rules: "crossing up" fires when the price goes from below the level to at or above it, and the first price after you arm an alert is only a starting point. Whichever side sees a crossing first, the server or a browser, records it; the notification is sent once. While signed in, `/api/selfhost/alerts/status` shows whether the checker is running, how many symbols it watches, and which alert symbols it cannot check yet. Crypto symbols from Binance and Coinbase are still checked only in the browser.
 
+Like an app tab left open overnight, the checker compares the first regular-session price of the day with the previous close, so a level crossed between the close and the open fires at the open. If the checker stops, it is restarted automatically; `/api/health/ready` reports only the web server and database, so the checker restarting never marks the container unhealthy.
+
 ## Security model
 
 - **Login covers everything** except `/api/health/ready`, the container healthcheck, which returns only `{"ok":true}`. That includes the app, its market-data API, and upstream's `/api/health`.
+- **The alert checker's access:** the server-side alert checker reads market data through a second listener bound to `127.0.0.1` on a random port inside the container, never exposed. It answers only three read-only market-data routes, and only with a random credential created at each start that never leaves the process.
 - **Failed logins** get an increasing delay per client, never a lockout. In public mode a short global spacing is added.
 - **Cross-site requests:** every state-changing request from a browser must carry a same-origin `Origin` header, and session cookies are `HttpOnly; SameSite=Lax`. Changes through the self-hosting JSON API also need an `X-Wickline-Selfhost: 1` header. Requests with an API token (`Authorization: Bearer`) need no `Origin`: browsers never send these tokens on their own.
 - **Slow clients:** a request must arrive within 60 seconds. Long-lived streams are not affected.

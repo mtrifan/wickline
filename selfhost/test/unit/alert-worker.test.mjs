@@ -66,6 +66,17 @@ test('resume: a recent stored price in the same session becomes the previous pri
   assert.equal(other.tick({ symbol: 'AAPL', price: 101, session: 1 }).length, 0, 'another session: ignored');
 });
 
+test('a re-arm leaves no resume point: a restart after it cannot fire a false gap crossing', () => {
+  const ev = createEvaluator({ resumeMaxGapMs: 15 * 60_000 });
+  ev.setAlerts([alert({ condition: 'cross' })]);
+  ev.tick({ symbol: 'AAPL', price: 99 });
+  assert.equal(ev.tick({ symbol: 'AAPL', price: 101 }).length, 1);
+  assert.deepEqual(ev.progress(), {}, 'a fired alert has no resume point');
+  ev.setAlerts([alert({ condition: 'cross', active: false })]);
+  ev.setAlerts([alert({ condition: 'cross' })]);
+  assert.deepEqual(ev.progress(), {}, 'nor a re-armed one before its next price');
+});
+
 test('progress reports the latest price per alert', () => {
   const ev = createEvaluator();
   ev.setAlerts([alert(), alert({ id: 'b', symbol: 'MSFT' })]);
@@ -127,6 +138,36 @@ test('the Yahoo source shards by 100, sends the credential, and reconnects after
   assert.equal(ticks[1].session, 0);
   src.setSymbols(['S1']);
   await until(() => relay.streams.size === 1);
+});
+
+test('the supervisor replaces a worker that stops sending heartbeats', async () => {
+  const sync = { snapshot: () => ({ keys: {} }), onChange: () => () => {} };
+  const ledger = { resumePoints: () => ({}), trigger: () => ({ fired: false }), saveProgress() {} };
+  const silent = new URL('data:text/javascript,setInterval(() => {}, 1000)');
+  const sup = createAlertSupervisor({ ledger, sync, workerData: {}, workerUrl: silent, heartbeatTimeoutMs: 200 });
+  cleanup.push(() => sup.stop());
+  sup.start();
+  await until(() => sup.status().restarts >= 1, 5000);
+  assert.equal(sup.status().lastError, 'no heartbeat');
+});
+
+test('a failed trigger write gives the worker the stored alerts back, so the alert stays armed', async () => {
+  const items = [alert()];
+  const sync = { snapshot: () => ({ keys: { alerts: { v: JSON.stringify(items), deleted: false } } }), onChange: () => () => {} };
+  const ledger = { resumePoints: () => ({}), trigger: () => { throw new Error('disk full'); }, saveProgress() {} };
+  // Reports each alerts message back as a log line, and fires one trigger after the first.
+  const src = "import { parentPort } from 'node:worker_threads'; let n = 0;"
+    + "parentPort.on('message', (m) => { if (m.type !== 'alerts') return; n++; parentPort.postMessage({ type: 'log', level: 'info', msg: 'alerts', data: { n, active: m.items[0]?.active } });"
+    + "if (n === 1) parentPort.postMessage({ type: 'trigger', id: 'a', price: 101, at: 1 }); });"
+    + "setInterval(() => parentPort.postMessage({ type: 'heartbeat', status: {} }), 50);";
+  const lines = [];
+  const log = { info: (msg, data) => lines.push({ msg, ...data }), error: (msg) => lines.push({ msg }), warn() {}, debug() {} };
+  const sup = createAlertSupervisor({ ledger, sync, log, workerData: {}, workerUrl: new URL(`data:text/javascript,${encodeURIComponent(src)}`) });
+  cleanup.push(() => sup.stop());
+  sup.start();
+  await until(() => lines.some((l) => l.msg === 'alerts' && l.n === 2));
+  assert.ok(lines.some((l) => l.msg === 'recording a server trigger failed'));
+  assert.equal(lines.find((l) => l.n === 2).active, true);
 });
 
 test('the supervisor restarts a worker that exits, with backoff', async () => {

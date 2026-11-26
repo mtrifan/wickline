@@ -245,6 +245,17 @@ test('a trigger reported long after it happened is recorded but not pushed', () 
   assert.equal(s.rows().length, 0);
 });
 
+test('progress is stored for resuming, keeps trigger records, and skips deleted alerts', () => {
+  const s = setup();
+  s.write([armed('a'), armed('b')], 0);
+  s.write([fired('a', 2000), armed('b')], 1);
+  s.ledger.saveProgress({ a: { price: 190.5, at: 5000, session: 1 }, b: { price: 189, at: 5001, session: 0 }, bad: { price: NaN, at: 1 } });
+  assert.deepEqual(s.ledger.resumePoints(), { a: { price: 190.5, at: 5000, session: 1 }, b: { price: 189, at: 5001, session: 0 } });
+  assert.deepEqual(s.ledger.lastTrigger('a'), { at: 2000, version: 2 }, 'progress does not overwrite the trigger record');
+  s.write([fired('a', 2000)], 2); // b deleted
+  assert.deepEqual(Object.keys(s.ledger.resumePoints()), ['a']);
+});
+
 test('a refused write records no trigger and queues nothing', () => {
   const s = setup({ maxTotalChars: 400 });
   s.write([armed('a')], 0);

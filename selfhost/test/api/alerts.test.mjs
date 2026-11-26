@@ -7,7 +7,7 @@ import http from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { startSelfhost, loopbackBase } from '../../server.mjs';
+import { startSelfhost } from '../../server.mjs';
 import { loadConfig } from '../../config.mjs';
 import { silentLogger } from '../../log.mjs';
 
@@ -96,17 +96,36 @@ test('a crossing fires on the server with no browser open, is synced, and pushed
   assert.equal(st.running, true);
 });
 
-test('the internal credential works only from this host, only for the market-data routes', async () => {
+test('the internal credential works only on the loopback listener, only for the market-data routes', async () => {
   const relay = newRelay();
   const ctx = await start(newDir(), relay);
   cleanup.push(() => ctx.app.close());
-  for (const p of ['/api/yahoo/stream?symbols=AAPL', '/api/selfhost/state', '/api/health']) {
-    const r = await fetch(`${ctx.base}${p}`, { headers: { 'x-wickline-internal': 'f'.repeat(64) } });
-    assert.equal(r.status, 403, p);
+  await ctx.put([armed], 0);
+  await until(() => relay.watching('AAPL'));
+  const token = relay.requests[0]['x-wickline-internal'];
+  assert.match(token, /^[0-9a-f]{64}$/);
+  // The public port ignores the credential: it is an ordinary unauthenticated request.
+  assert.equal((await fetch(`${ctx.base}/api/yahoo/quotes?symbols=AAPL`, { headers: { 'x-wickline-internal': token } })).status, 401);
+  const internal = `http://127.0.0.1:${ctx.app.internalPort}`;
+  assert.equal((await fetch(`${internal}/api/yahoo/quotes?symbols=AAPL`, { headers: { 'x-wickline-internal': 'f'.repeat(64) } })).status, 403, 'wrong token');
+  assert.equal((await fetch(`${internal}/api/yahoo/quotes?symbols=AAPL`)).status, 403, 'no token');
+  for (const p of ['/api/selfhost/state', '/api/health', '/']) {
+    assert.equal((await fetch(`${internal}${p}`, { headers: { 'x-wickline-internal': token } })).status, 403, p);
   }
-  assert.equal(loopbackBase('0.0.0.0', 80), 'http://127.0.0.1:80');
-  assert.equal(loopbackBase('::', 80), 'http://[::1]:80');
-  assert.equal(loopbackBase('192.168.1.5', 80), 'http://192.168.1.5:80');
+  assert.equal((await fetch(`${internal}/api/yahoo/quotes`, { method: 'POST', headers: { 'x-wickline-internal': token } })).status, 403, 'GET only');
+  assert.equal((await fetch(`${internal}/api/yahoo/chart`, { headers: { 'x-wickline-internal': token } })).status, 404, 'allowed routes reach upstream (the fake answers 404)');
+});
+
+test('the status reports symbols beyond ALERT_MAX_SYMBOLS and symbols no source serves yet', async () => {
+  const relay = newRelay();
+  const ctx = await start(newDir(), relay, { ALERT_MAX_SYMBOLS: '1' });
+  cleanup.push(() => ctx.app.close());
+  await ctx.put([armed, { ...armed, id: 'k2', symbol: 'MSFT' }, { ...armed, id: 'k3', symbol: 'BINANCE:BTCUSDT' }], 0);
+  const status = async () => (await fetch(`${ctx.base}/api/selfhost/alerts/status`, { headers: { cookie: ctx.cookie } })).json();
+  await until(async () => (await status()).truncated === 1, 8000);
+  const st = await status();
+  assert.deepEqual(st.unsupportedSymbols, ['BINANCE:BTCUSDT']);
+  assert.equal(st.symbols, 1);
 });
 
 test('progress survives a restart: a crossing during the downtime fires once, noted as a gap', async () => {

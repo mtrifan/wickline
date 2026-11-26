@@ -1,7 +1,9 @@
 // Yahoo prices for the alert worker (PLAN §2.5.2): reads upstream's own relay,
 // GET /api/yahoo/stream?symbols=…, over loopback, so all of upstream's Yahoo logic is reused.
 // Upstream takes at most 100 symbols per stream, so symbols are sharded. Each shard reconnects
-// with exponential backoff, and a stream silent for longer than upstream's 20 s ping is reopened.
+// with exponential backoff. The relay pings every 20 s; a connection silent for SILENCE_MS (pings
+// included) is dead and is reopened. Pings keep a stream alive even when Yahoo itself has gone
+// quiet: detecting that (staleness) is the REST fallback's job (PLAN §2.5.5).
 //
 // Ticks: { s: "AAPL", p: price, t: time ms, m: session (0 pre, 1 regular, 2 post, 3 extended) }.
 
@@ -31,7 +33,10 @@ export function sseParser(onData) {
       if (line.endsWith('\r')) line = line.slice(0, -1);
       if (line === '') { if (data.length) { onData(data.join('\n')); data = []; } continue; }
       if (line.startsWith(':')) continue;
-      if (line.startsWith('data:')) data.push(line.slice(line[5] === ' ' ? 6 : 5));
+      if (line.startsWith('data:')) {
+        data.push(line.slice(line[5] === ' ' ? 6 : 5));
+        if (data.length > 1000) data = []; // an event that never ends is not a tick
+      }
     }
     if (buf.length > 1_000_000) buf = ''; // a line that never ends is not a tick
   };

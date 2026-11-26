@@ -60,7 +60,8 @@ export function createEvaluator({ extendedHours = true, resumeMaxGapMs = 15 * 60
         alerts.set(a.id, st);
         continue;
       }
-      if (active && !cur.active) cur.chains.clear(); // re-armed: the first price is ignored, like upstream
+      // Re-armed: the first price is ignored, like upstream; nothing from before it is a resume point.
+      if (active && !cur.active) { cur.chains.clear(); cur.last = null; }
       if (normalizeSymbol(a.symbol) !== cur.key) { cur.key = normalizeSymbol(a.symbol); cur.chains.clear(); }
       cur.alert = alert;
       cur.active = active;
@@ -99,7 +100,7 @@ export function createEvaluator({ extendedHours = true, resumeMaxGapMs = 15 * 60
   /** The latest price seen per alert, for resuming after a restart: id -> { price, at, session }. */
   function progress() {
     const out = {};
-    for (const [id, st] of alerts) if (st.last && !st.chains.get(st.last.session)?.resumed) out[id] = st.last;
+    for (const [id, st] of alerts) if (st.active && st.last && !st.chains.get(st.last.session)?.resumed) out[id] = st.last;
     return out;
   }
 

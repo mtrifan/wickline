@@ -37,7 +37,16 @@ export function createAlertSupervisor({ ledger, sync, workerData, log, workerUrl
       switch (msg?.type) {
         case 'heartbeat': lastHeartbeat = now(); lastStatus = msg.status; break;
         case 'trigger': {
-          const r = ledger.trigger({ id: msg.id, triggerPrice: msg.price, triggeredAt: msg.at, gap: !!msg.gap });
+          let r;
+          try {
+            r = ledger.trigger({ id: msg.id, triggerPrice: msg.price, triggeredAt: msg.at, gap: !!msg.gap });
+          } catch (e) {
+            // The worker already counts the alert as fired: give it the stored list back, so the
+            // alert stays armed there and the next crossing fires it.
+            log?.error('recording a server trigger failed', { id: msg.id, error: e });
+            worker?.postMessage({ type: 'alerts', items: currentAlerts() });
+            break;
+          }
           if (!r.fired) log?.debug('server trigger already recorded', { id: msg.id });
           break;
         }
