@@ -99,6 +99,8 @@ test('stripCors removes access-control headers in every writeHead/setHeader form
     const h = new Map();
     return {
       setHeader: (k, v) => { h.set(k.toLowerCase(), v); },
+      getHeader: (k) => h.get(k.toLowerCase()),
+      hasHeader: (k) => h.has(k.toLowerCase()),
       getHeaderNames: () => [...h.keys()],
       removeHeader: (k) => h.delete(k.toLowerCase()),
       writeHead: (status, ...args) => { sent.push({ status, args, kept: [...h.keys()] }); },
@@ -115,4 +117,15 @@ test('stripCors removes access-control headers in every writeHead/setHeader form
   r = stripCors(fake());
   r.writeHead(204, [['access-control-allow-methods', 'GET'], ['B', 'c']]);
   assert.deepEqual(sent.at(-1).args[0], [['B', 'c']]);
+  // Event streams (upstream's live quotes) get X-Accel-Buffering: no, so nginx does not buffer them.
+  r = stripCors(fake());
+  r.writeHead(200, { 'Content-Type': 'text/event-stream', 'Access-Control-Allow-Origin': '*' });
+  assert.deepEqual(sent.at(-1).args[0], { 'Content-Type': 'text/event-stream', 'X-Accel-Buffering': 'no' });
+  r = stripCors(fake());
+  r.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  r.writeHead(200);
+  assert.ok(sent.at(-1).kept.includes('x-accel-buffering'));
+  r = stripCors(fake());
+  r.writeHead(200, { 'Content-Type': 'application/json' });
+  assert.deepEqual(sent.at(-1).args[0], { 'Content-Type': 'application/json' }, 'other responses are untouched');
 });
