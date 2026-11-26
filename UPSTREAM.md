@@ -24,7 +24,8 @@ Upstream compatibility is a primary requirement. The rule that makes it cheap: *
 
 1. In a PR into `selfhosted`:
    - set `selfhost/VERSION` to the next revision (back to `1` after an upstream version change);
-   - rename `## Unreleased` in `CHANGELOG-SELFHOSTED.md` to `## sh-v<upstream>-<revision> — <date>`, and start a new `## Unreleased` above it.
+   - rename `## Unreleased` in `CHANGELOG-SELFHOSTED.md` to `## sh-v<upstream>-<revision> — <date>`, and start a new `## Unreleased` above it;
+   - if the release adds a schema migration, capture its database fixture: `node selfhost/test/fixtures/db/build.mjs <new schema number>`, and commit the `.db` and `.json`. The test suite fails until every schema has one, and existing fixtures are never rebuilt.
 2. Merge it, then tag the merge commit and push the tag:
    ```sh
    git switch selfhosted && git pull

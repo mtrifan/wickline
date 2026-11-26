@@ -25,8 +25,8 @@ async function device(browser, { blockEvents = false } = {}) {
 }
 
 const sync = (page) => page.evaluate(() => ({ leader: window.wicklineSelfhost.leader, connected: window.wicklineSelfhost.connected, state: window.wicklineSelfhost.state }));
-async function waitLeader(page, { connected = true } = {}) {
-  await expect.poll(async () => { const s = await sync(page); return s.leader && (!connected || s.connected); }, { timeout: 10_000 }).toBe(true);
+async function waitLeader(page, { connected = true, timeout = 10_000 } = {}) {
+  await expect.poll(async () => { const s = await sync(page); return s.leader && (!connected || s.connected); }, { timeout }).toBe(true);
 }
 const getItem = (page, key) => page.evaluate((k) => localStorage.getItem(k), key);
 const setItem = (page, key, value) => page.evaluate(([k, v]) => localStorage.setItem(k, v), [key, value]);
@@ -41,7 +41,9 @@ test('a live key (alerts) reaches the other device within 5 s, with no reload', 
   const alerts = JSON.stringify([{ id: `e2e${Date.now()}`, symbol: 'AAPL', condition: 'cross', price: 190, message: '', active: true, created: Date.now() }]);
   await setItem(a.page, 'wickline.alerts', alerts);
   await expect.poll(() => getItem(b.page, 'wickline.alerts'), { timeout: 5_000 }).toBe(alerts);
-  await expect(b.page.locator('#wl-sync-banner')).toBeHidden();
+  // Applied live, not held for a reload. (A banner can still appear for another key: in Firefox the
+  // app writes the chart layout later, and two fresh devices then race on `workspace`.)
+  expect(await b.page.evaluate(() => window.wicklineSelfhost.held)).not.toContain('alerts');
   await a.ctx.close(); await b.ctx.close();
 });
 
@@ -209,8 +211,10 @@ test('without Web Locks (plain-http LAN), a localStorage lease elects one leader
   await expect.poll(() => second.evaluate(() => typeof window.wicklineSelfhost)).toBe('object');
   await second.waitForTimeout(3500); // a few lease ticks
   expect([(await sync(first)).leader, (await sync(second)).leader]).toEqual([true, false]);
-  await first.close(); // pagehide releases the lease
-  await waitLeader(second);
+  // pagehide releases the lease at once. Firefox does not run unload handlers when Playwright
+  // closes a page, so there the lease expires instead (15 s): both are a handover.
+  await first.close();
+  await waitLeader(second, { timeout: 25_000 });
   await ctx.close();
 });
 

@@ -1,0 +1,29 @@
+{
+  "schema": 4,
+  "createdAt": 1795780800000,
+  "session": "u5wImdB1ZSHzcsteYpUW3DSjOlq9-HzAQZvQvmpVKYg",
+  "token": "wl_mNIGyW2kMkzI2l-BX2gw8tEkY1Rp_V7nkMQRfWaNiPU",
+  "epoch": "cc3f01bdb78a6ba0",
+  "keys": {
+    "watchlist": {
+      "v": "[\"YAHOO:AAPL\",\"BINANCE:BTCUSDT\"]",
+      "ver": 1,
+      "deleted": false
+    },
+    "theme": {
+      "v": "\"dark\"",
+      "ver": 1,
+      "deleted": false
+    },
+    "alerts": {
+      "v": "[{\"id\":\"a1\",\"symbol\":\"BINANCE:BTCUSDT\",\"condition\":\"up\",\"price\":100000,\"message\":\"fixture\",\"active\":false,\"created\":1795780800000,\"triggeredAt\":1795780800000,\"triggerPrice\":100010}]",
+      "ver": 2,
+      "deleted": false
+    },
+    "drawings.YAHOO:AAPL": {
+      "v": null,
+      "ver": 2,
+      "deleted": true
+    }
+  }
+}
