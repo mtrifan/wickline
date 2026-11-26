@@ -6,11 +6,18 @@ Release tags: `sh-v<upstream version>-<revision>`. Image tags: `<upstream versio
 
 ## Unreleased
 
+## sh-v0.1.11-1 — 2026-11-26
+
+Images: `ghcr.io/mtrifan/wickline:0.1.11-sh.1` (immutable), `:0.1.11`, and `:stable` / `:latest` after approval. No database change: upgrading from 0.1.9-sh.1 needs no migration.
+
 ### Changed
 - Based on upstream **v0.1.11** (from v0.1.9): Bybit and OKX (spot and perpetuals), editing drawings by the numbers, back to the latest candle, and more; see the upstream [releases](https://github.com/keptaduona/wickline/releases). The drawing magnet setting syncs between devices.
 
 ### Added
 - Server-side alerts on Bybit and OKX symbols, spot and perpetuals: streamed live, with the REST fallback and stale detection like the other exchanges.
+
+### Fixed
+- Alert sources ignore blank or zero prices from an exchange instead of reading them as a crash to zero, back off when an exchange reports throttling in its response body, and reopen a stream whose subscription stalled even though pings are answered.
 
 ## sh-v0.1.9-1 — 2026-11-26
 
