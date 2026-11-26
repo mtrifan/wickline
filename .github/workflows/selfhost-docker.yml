@@ -47,6 +47,10 @@ jobs:
         env:
           IMAGE: wickline-selfhost:ci
         run: selfhost/test/docker/smoke.sh
+      - name: Upgrade and rollback test
+        env:
+          IMAGE: wickline-selfhost:ci
+        run: selfhost/test/docker/upgrade.sh
 
   publish:
     name: publish edge image

@@ -90,6 +90,10 @@ jobs:
         env:
           IMAGE: wickline-selfhost:release
         run: selfhost/test/docker/smoke.sh
+      - name: Upgrade and rollback test
+        env:
+          IMAGE: wickline-selfhost:release
+        run: selfhost/test/docker/upgrade.sh
 
   publish:
     name: publish the release image
