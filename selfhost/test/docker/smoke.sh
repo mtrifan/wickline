@@ -55,16 +55,16 @@ echo "ok: API requires login"
 
 code="$(curl -s -o /dev/null -w '%{http_code}' -c "$JAR" -H "Origin: $BASE" --data-urlencode "password=$PASSWORD" -d next=/ "$BASE/selfhost/login")"
 [ "$code" = 302 ] || fail "login returned $code"
-curl -fsS -b "$JAR" "$BASE/api/health" | grep -q '"app":"wickline"' || fail "authenticated /api/health"
-curl -fsS -b "$JAR" "$BASE/" | grep -q '<title>Wickline</title>' || fail "app page"
-if curl -sS -D - -o /dev/null -b "$JAR" "$BASE/api/health" | grep -qi '^access-control-allow-origin'; then fail "CORS header leaked"; fi
+grep -q '"app":"wickline"' <<<"$(curl -fsS -b "$JAR" "$BASE/api/health")" || fail "authenticated /api/health"
+grep -q '<title>Wickline</title>' <<<"$(curl -fsS -b "$JAR" "$BASE/")" || fail "app page"
+if grep -qi '^access-control-allow-origin' <<<"$(curl -sS -D - -o /dev/null -b "$JAR" "$BASE/api/health")"; then fail "CORS header leaked"; fi
 echo "ok: login, app and API"
 
 echo "== sync"
 page="$(curl -fsS -b "$JAR" "$BASE/")"
-echo "$page" | grep -q 'id="wl-snapshot"' || fail "snapshot not injected"
-echo "$page" | grep -q 'src="/selfhost/boot.js"' || fail "boot.js not injected"
-curl -fsS -b "$JAR" "$BASE/selfhost/boot.js" | grep -q 'wickline-selfhost' || fail "boot.js not served"
+grep -q 'id="wl-snapshot"' <<<"$page" || fail "snapshot not injected"
+grep -q 'src="/selfhost/boot.js"' <<<"$page" || fail "boot.js not injected"
+grep -q 'wickline-selfhost' <<<"$(curl -fsS -b "$JAR" "$BASE/selfhost/boot.js")" || fail "boot.js not served"
 EPOCH="$(curl -fsS -b "$JAR" "$BASE/api/selfhost/state" | sed -E 's/.*"epoch":"([0-9a-f]+)".*/\1/')"
 [ -n "$EPOCH" ] || fail "no epoch in the snapshot"
 put() { curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X PUT -H "Origin: $BASE" -H 'X-Wickline-Selfhost: 1' -H 'Content-Type: application/json' \
@@ -75,16 +75,16 @@ echo "ok: snapshot and boot.js injected, synced write accepted, server lock held
 
 echo "== server-side alerts"
 st="$(curl -fsS -b "$JAR" "$BASE/api/selfhost/alerts/status")"
-echo "$st" | grep -q '"enabled":true' || fail "alert checker not enabled: $st"
-echo "$st" | grep -q '"running":true' || fail "alert worker not running: $st"
+grep -q '"enabled":true' <<<"$st" || fail "alert checker not enabled: $st"
+grep -q '"running":true' <<<"$st" || fail "alert worker not running: $st"
 echo "ok: alert worker thread running"
 
 echo "== backup inside the container"
 out="$(docker exec "$NAME" node selfhost/cli.mjs backup)" || fail "cli backup: $out"
-echo "$out" | grep -q 'backup written: /data/backups/wickline-' || fail "unexpected backup output: $out"
+grep -q 'backup written: /data/backups/wickline-' <<<"$out" || fail "unexpected backup output: $out"
 BACKUP="$(docker exec "$NAME" sh -c 'ls -1 /data/backups/wickline-*.db | tail -n 1')"
 code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE/api/selfhost/backup")"; [ "$code" = 200 ] || fail "backup download returned $code"
-curl -fsS -b "$JAR" "$BASE/api/selfhost/export" | grep -q '"theme":"light"' || fail "export misses the synced key"
+grep -q '"theme":"light"' <<<"$(curl -fsS -b "$JAR" "$BASE/api/selfhost/export")" || fail "export misses the synced key"
 docker exec "$NAME" node selfhost/cli.mjs restore "$BACKUP" >/dev/null 2>&1 && fail "restore ran while the server was up"
 echo "ok: backup written ($BACKUP), download and export work, restore refused while running"
 code="$(put theme dark 1)"; [ "$code" = 200 ] || fail "second sync write returned $code"
@@ -103,9 +103,9 @@ echo "ok: stopped in ${took}s with exit code 0"
 echo "== restart keeps data"
 docker start "$NAME" >/dev/null
 wait_healthy
-curl -fsS -b "$JAR" "$BASE/api/health" | grep -q '"app":"wickline"' || fail "session lost after restart"
+grep -q '"app":"wickline"' <<<"$(curl -fsS -b "$JAR" "$BASE/api/health")" || fail "session lost after restart"
 docker exec "$NAME" sh -c 'test -s /data/wickline.db' || fail "database missing in /data"
-curl -fsS -b "$JAR" "$BASE/api/selfhost/state" | grep -q '"theme":{"v":"dark"' || fail "synced state lost after restart"
+grep -q '"theme":{"v":"dark"' <<<"$(curl -fsS -b "$JAR" "$BASE/api/selfhost/state")" || fail "synced state lost after restart"
 echo "ok: session, database and synced state survived the restart"
 
 echo "== restore with the container stopped"
@@ -113,15 +113,15 @@ docker stop -t 15 "$NAME" >/dev/null
 docker run --rm -v "$VOL:/data" "$IMAGE" sh -c 'test ! -e /data/server.lock' || fail "lock left after a clean stop"
 out="$(docker run --rm --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges -v "$VOL:/data" "$IMAGE" \
   node selfhost/cli.mjs restore "$BACKUP")" || fail "restore with the container stopped: $out"
-echo "$out" | grep -q '^restored ' || fail "unexpected restore output: $out"
+grep -q '^restored ' <<<"$out" || fail "unexpected restore output: $out"
 docker start "$NAME" >/dev/null
 wait_healthy
 code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE/api/selfhost/state")"
 [ "$code" = 401 ] || fail "the session survived a restore (got $code)"
 curl -s -o /dev/null -c "$JAR" -H "Origin: $BASE" --data-urlencode "password=$PASSWORD" -d next=/ "$BASE/selfhost/login"
 snap="$(curl -fsS -b "$JAR" "$BASE/api/selfhost/state")"
-echo "$snap" | grep -q '"theme":{"v":"light"' || fail "restored state is not the backup's"
-echo "$snap" | grep -q "\"epoch\":\"$EPOCH\"" && fail "the restore kept the old epoch"
+grep -q '"theme":{"v":"light"' <<<"$snap" || fail "restored state is not the backup's"
+grep -q "\"epoch\":\"$EPOCH\"" <<<"$snap" && fail "the restore kept the old epoch"
 echo "ok: restored from $BACKUP: backup's state, new epoch, browsers signed out"
 
 echo "PASS"
