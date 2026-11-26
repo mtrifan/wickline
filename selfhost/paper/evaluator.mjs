@@ -68,7 +68,7 @@ export function createPaperEvaluator({ sync, db, outbox, presence, publicUrl = n
    * results' notifications in the same transaction. Returns 'ok', 'conflict' or throws (storage).
    */
   function commit(results) {
-    let outcome = 'conflict';
+    let written = null; // the version this save writes; adopted only once the transaction committed
     let queued = false;
     sync.mutate('paper', (cur, { version }) => {
       if (sync.epoch() !== held.epoch || version - 1 !== held.version) return undefined; // replaced underneath
@@ -77,12 +77,14 @@ export function createPaperEvaluator({ sync, db, outbox, presence, publicUrl = n
           if (outbox.insert(`paper:${held.epoch}:${version}:${n}`, paperPayload(r, publicUrl))) queued = true;
         });
       }
-      outcome = 'ok';
-      held = { epoch: held.epoch, version };
+      written = version;
       return JSON.stringify(account.toJSON());
     }, { by: BY });
+    // Reached only if the transaction committed (a failed write throws and rolls back).
+    if (written === null) return 'conflict';
+    held = { epoch: held.epoch, version: written };
     if (queued) outbox.kick();
-    return outcome;
+    return 'ok';
   }
 
   function apply(symbol, price, atMs, replay = true) {

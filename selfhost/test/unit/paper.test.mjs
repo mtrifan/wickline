@@ -147,7 +147,7 @@ test('a transient storage failure replays that price once', () => {
   s.browserSave(browserAccount([limitBuy]));
   let fail = 1;
   const real = s.sync.mutate;
-  s.sync.mutate = (...args) => { if (fail-- > 0) throw new Error('disk I/O error'); return real(...args); };
+  s.sync.mutate = (key, fn, opts) => real(key, (cur, meta) => { const v = fn(cur, meta); if (fail-- > 0) throw new Error('disk I/O error'); return v; }, opts); // fails at the write, after the callback
   const paper = createPaperEvaluator({ sync: s.sync, db: s.db, outbox: null, presence: s.presence, now: () => s.clock.t });
   s.clock.t += PRESENCE_LEASE_MS + 1; paper.tick(); s.clock.t += 1;
   paper.price({ symbol: 'YAHOO:AAPL', price: 184, at: s.clock.t });
@@ -207,7 +207,7 @@ test('a failed save retries from the account as it was, other marks included (a 
   s.browserSave(a);
   let fail = 1;
   const real = s.sync.mutate;
-  s.sync.mutate = (...args) => { if (fail-- > 0) throw new Error('disk I/O error'); return real(...args); };
+  s.sync.mutate = (key, fn, opts) => real(key, (cur, meta) => { const v = fn(cur, meta); if (fail-- > 0) throw new Error('disk I/O error'); return v; }, opts); // fails at the write, after the callback
   s.away();
   s.paper.price({ symbol: 'YAHOO:A', price: 50, at: s.clock.t }); // no fill: only a mark (not saved)
   s.paper.price({ symbol: 'YAHOO:B', price: 89, at: s.clock.t }); // rejected; the save fails once
@@ -221,7 +221,7 @@ test('a transient failure keeps the queued prices that follow', () => {
   s.browserSave(browserAccount([limitBuy, { symbol: 'YAHOO:AAPL', side: 'buy', type: 'limit', qty: 1, price: 175 }]));
   let fail = 1;
   const real = s.sync.mutate;
-  s.sync.mutate = (...args) => { if (fail-- > 0) throw new Error('disk I/O error'); return real(...args); };
+  s.sync.mutate = (key, fn, opts) => real(key, (cur, meta) => { const v = fn(cur, meta); if (fail-- > 0) throw new Error('disk I/O error'); return v; }, opts); // fails at the write, after the callback
   s.away();
   s.paper.price({ symbol: 'YAHOO:AAPL', price: 184, at: s.clock.t });
   s.paper.price({ symbol: 'YAHOO:AAPL', price: 174, at: s.clock.t });
@@ -233,7 +233,7 @@ test('an outside change lifts a pause from earlier storage failures', () => {
   s.browserSave(browserAccount([limitBuy]));
   let failing = true;
   const real = s.sync.mutate;
-  s.sync.mutate = (...args) => { if (failing) throw new Error('disk full'); return real(...args); };
+  s.sync.mutate = (key, fn, opts) => real(key, (cur, meta) => { const v = fn(cur, meta); if (failing) throw new Error('disk full'); return v; }, opts);
   s.away();
   s.paper.price({ symbol: 'YAHOO:AAPL', price: 184, at: s.clock.t });
   assert.match(String(s.paper.status().paused), /disk full/);
