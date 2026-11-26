@@ -1,6 +1,8 @@
 # Phase 5 design: server-side paper trading
 
-Status: **proposal for the owner's approval** (2026-11-26). Nothing here is built yet.
+Status: **proposal v2 for the owner's approval** (2026-11-26), reworked after an independent review (Codex: REWORK) of v1. Nothing here is built yet.
+
+v1 ran two engines on the same account at once (the browser's and the server's). Whole-account compare-and-swap cannot make two engines agree: a browser change still in upstream's 300 ms save timer could vanish silently, an old price could fill an order created after it, and buying power could be judged on different marks. **v2 has a single owner at a time: the server fills only while no main window is open.**
 
 ## Goal
 
@@ -36,106 +38,137 @@ or financing.
 
 ### 1. One engine, imported from upstream
 
-The server imports upstream's `PaperAccount` directly, the same way the contract tests do. The server
-fills exactly as the browser would, and an upstream change to the fill rules applies to both
-automatically. The `paper-engine` contract is extended to pin the pieces this design relies on:
-`tick`, `hasWork`, `toJSON`, the shape of a fill, and the `last` and `seq` fields.
+The server imports upstream's `PaperAccount` directly, the same way the contract tests do. Fills follow
+upstream's rules exactly, and an upstream change applies to both sides. The `paper-engine` contract is
+extended with **behavioural** tests against the real engine:
+- `tick` returns fills **and** rejected orders (removed, with no fill);
+- one tick can produce several results (an entry, then its bracket exit);
+- the walk stops after 50 iterations;
+- times are seconds, while feed times are milliseconds;
+- `seq` numbers orders, fills and trades together;
+- `toJSON` caps trades at 500 and fills at 1,000;
+- `reset` restarts `seq`.
 
-### 2. Who fills: the worker proposes, the main thread decides
+### 2. One owner at a time: the server fills only while you are away
 
-```
-price tick ──► worker: mirror PaperAccount.tick(...)  ── would fill? ──► main: { type: 'paper', symbol, price, at }
-                                                                            │
-                     state.mutate('paper'): load the CURRENT stored account, tick(symbol, price, at),
-                     write toJSON() if it produced fills (new version → SSE → tabs rebuild), queue pushes
-```
+| State | Who fills | When |
+|---|---|---|
+| **Browser** | upstream's engine in the main window, as today | a main window reported presence in the last `PRESENCE_LEASE` (150 s), or `index.html` was served that recently |
+| **Server** | the server's evaluator | no presence for longer than the lease |
 
-- **The worker** keeps an in-memory mirror of the account, refreshed on every `paper` change through the
-  same `sync.onChange` path alerts use. It watches every symbol where `hasWork(symbol)` is true: an open
-  order, or a position, which may carry a stop loss or take profit. Those symbols are added to the
-  feed's symbol set, alongside the alert symbols.
-- **The worker** runs each price through the mirror only to decide whether to report it. It reports
-  only prices that produce a fill, plus a throttled **progress** price per symbol (see §4). It never
-  writes.
-- **The main thread** applies the price to the **current stored account** inside one SQLite transaction
-  (`state.mutate`), and saves only if that produced fills. The decision is always made against the
-  latest saved state, so nothing the browser saved since the mirror was refreshed is lost or applied
-  twice.
-- A price that would fill on the mirror but no longer fills on the stored account (a browser already
-  filled or cancelled it) does nothing.
+- **Presence:** every **main** window sends `POST /api/selfhost/presence` every 30 s. `boot.js` does this,
+  and pop-out windows (`?popout=1`) never fill, so they never report. This is a self-hosted addition only;
+  upstream is not changed.
+- **Serving the page:** serving `index.html` also counts as presence. It renews the lease **before** the
+  snapshot is built, so the server cannot fill between the snapshot a page starts from and its first
+  report.
+- **The lease:** 150 s, so it outlives background timer throttling, which can stretch a hidden tab's
+  timers to once a minute.
+- **A tab that stops reporting:** a closed tab, a frozen tab, or a phone gone to sleep. The server takes over
+  after the lease runs out.
+- **During those 150 s nobody fills.** That is the deliberate price of never having two owners.
 
-### 3. A browser open at the same time
+### 3. Handover
 
-Both sides may fill the same order from the same move, as with alerts. The key is compare-and-swap, so
-**the first save wins**:
-- **The server saves first:** a browser save built on the older version gets a 409. `boot.js`
-  re-hydrates `paper`, upstream rebuilds its account from it, and the server's fill is shown.
-- **The browser saves first:** the server's transaction loads the browser's account, finds the order
-  gone, and does nothing.
-- **A fill and a user action at the same moment:** for example, the user moves a stop just as the
-  server fills it. The later save is rejected, and that browser shows the existing notice "Your change
-  on this device was replaced by a newer one". **The user sees the result and can redo the action.** The
-  account is never corrupted.
-- **Writes close together:** the browser saves 300 ms after a change and on `beforeunload`. Both are
-  ordinary compare-and-swap writes, so a stale `beforeunload` save after a server fill is rejected
-  server-side, as already designed for Phase 2.
+- **Browser to server** (the lease expires):
+  - the server loads the **current** stored account and its version into memory;
+  - it starts a new generation (§4), so nothing queued from before is applied.
+- **Server to browser** (presence or a page request arrives):
+  - the server stops at once and drops its queue;
+  - if prices moved its in-memory marks (`last`) since its last save, it saves the account once, so the
+    browser starts from current marks. That save is a compare-and-swap against the version it loaded,
+    like any other server write;
+  - the page or tab receives it through the snapshot or SSE. On a page request this all happens
+    synchronously **before** the snapshot is built, so a page always starts from the server's latest
+    account.
+- **A tab that wakes after the server took over:** for example, a phone that slept longer than the lease.
+  Its in-memory account is old, and upstream may act on a price before SSE delivers the server's
+  version. Its save is then rejected (the base is older) and it reloads the server's account, with the
+  usual notice. Nothing is merged silently.
+- **A save that might have been lost:** a browser save sent on `beforeunload` may never arrive (the page
+  is gone). The server then works from the last version that did arrive. When that browser returns with
+  its unsaved change, its write is rejected (the base is older) and it shows "Your change on this device
+  was replaced by a newer one". The change is visible, never silently merged. This can only happen
+  across a handover.
 
-### 4. Prices, gaps and restarts
+### 4. The server evaluator (while it owns the account)
 
-- **Prices:** the same feeds as alerts, and the same rule: a fill needs a fresh price (stream or REST
-  fallback). A stale symbol fills nothing. All market sessions count, as in the browser, which fills
-  on any quote it receives.
-- **The stored `last[symbol]`** is where the next walk starts. The account is written only on a fill,
-  so after a quiet spell that starting point can be old. Writing a progress price into the account
-  would bump its version every minute and keep rejecting the browser's saves. Instead:
-  - the worker sends a throttled **progress price** per watched symbol (at most once a minute, and only
-    when it moved);
-  - the main thread stores it in a **server-side table** (`paper_progress`: symbol, price, time), never
-    in the account;
-  - when the main thread applies a fill check, it starts the walk from the progress price **if that was
-    recorded after the account was last saved**. Otherwise it starts from the account's own `last`.
+- **One place, one account:** a single evaluator on the main thread keeps the account in memory as a
+  `PaperAccount`. Every symbol's mark is in that one object, so buying power is always judged on one
+  coherent set of marks. The worker only delivers prices; it runs no engine.
+- **Ordered prices:** the worker sends each price for a watched symbol in arrival order. The evaluator
+  applies them one by one (`tick`, with milliseconds converted to seconds). Each message carries the
+  evaluator's **generation**, and messages from an older generation are dropped.
+- **Committing a result:** the account, the outbox rows and the new generation checkpoint are written in
+  one SQLite transaction (`state.mutate` plus `outbox.insert`), as alert triggers are.
+  - The write is a compare-and-swap against the version the evaluator holds.
+  - If the stored version moved (an import, a restore, the API, a browser that slipped in), the result
+    is **discarded**: the evaluator reloads, starts a new generation, and the price is not replayed.
+  - A failed transaction also reloads from storage, so the in-memory copy never drifts from what is
+    stored.
+- **Freshness:** only **streamed** prices fill. Each needs a source time from the feed where it has one
+  (Yahoo's tick time is kept for this), and it must be under 60 s old. REST fallback prices do not fill:
+  they can be delayed and carry no trade time. A stale or unsupported symbol pauses server fills for
+  that symbol, and the status says so.
+- **Reset, import, restore, or a deleted `paper` key:** the evaluator listens for epoch changes and
+  `paper` changes, reloads, and starts a new generation.
 
-  The account changes only when something fills, and a restart walks from a recent price.
-- **After a restart, a gap, or a stream outage:** the first new price walks from the stored `last`. Any
-  limit or stop crossed while the server was not watching fills on that first price. This is what upstream
-  does today when you reopen the tab after a while. **Open question 2** asks whether to keep it.
+### 5. Gaps and restarts
 
-### 5. Notifications
+- **After a restart or reconnect:** the first price walks from the stored `last` to the new price. A limit
+  or stop **between those two prices** fills, as when upstream reopens a tab.
+- **Excursions the server did not see are lost.** If the price dipped through your stop and came back
+  while nothing was watching (the container was down, or the stream was out), that crossing cannot be
+  reconstructed. This is stated in the docs.
 
-- **Each fill the server makes** is pushed through the outbox, deduped on `paper:<fill id>:<time>`.
-  Fill ids come from the account's own counter, and the time makes them unique across account resets.
-- **Text:** "AAPL stop loss filled at 189.50", then "Sell 10 · P&L +125.00 · Paper" (the reason is
-  upstream's: Limit, Stop, Stop loss, Take profit). The link opens the symbol (`PUBLIC_URL/#s=…`).
-- **Fills the browser makes are not pushed**: you are looking at it.
-- **Settings:** `PAPER_SERVER` (default `true`) and `NOTIFY_PAPER` (default `true`).
+### 6. Notifications
 
-### 6. Status and limits
+- **What is pushed:** each fill or rejection the server commits is queued **in the same transaction**
+  (`outbox.insert`, then a kick after the commit).
+- **The key:** `paper:<epoch>:<account version>:<result id>`. That is unique across resets (the version
+  keeps rising) and across imports or restores (the epoch changes).
+- **The guarantee:** pushes are queued exactly once and delivered at least once. A crash after Gotify
+  accepted a message but before Wickline recorded it can repeat that one push, as for alerts.
+- **Text:**
+  - "AAPL stop loss filled at 189.50", then "Sell 10 · P&L +125.00 · Paper";
+  - "AAPL limit order rejected: insufficient buying power".
+- **Fills made in a browser are not pushed:** a main window is open somewhere.
+- **Settings:** `PAPER_SERVER` (default `true`) and `NOTIFY_PAPER` (default `true`). They are independent of
+  `ALERTS_SERVER`: the worker runs if either feature is on.
 
-- **Status:** `/api/selfhost/alerts/status` gains a `paper` section listing watched symbols, the last
-  server fill and errors. Watched paper symbols count towards `ALERT_MAX_SYMBOLS`; alerts come first.
-- **Writes:** the account is written once per fill. Progress prices go to `paper_progress` (a schema
-  migration, with a fixture captured when it ships), at most once a minute per watched symbol.
+### 7. Coverage and limits
+
+- **Watched symbols:** every symbol where `hasWork(symbol)` is true (an open order, or a position, which may
+  carry a stop loss or take profit).
+- **Priority:** paper symbols are watched **before** alert symbols under `ALERT_MAX_SYMBOLS`. A stop
+  protects money, so alerts give way first.
+- **Coverage:** the status reports each paper symbol as `covered`, `stale`, `unsupported` or
+  `over capacity`, plus who owns the account now, the last server fill and errors.
+- **Size:** the account is parsed once per handover and per reload, not per price. Ticks run on the
+  in-memory object. A commit serializes it, which upstream already caps (500 trades, 1,000 fills). A
+  quota failure on commit is logged and shown in the status, and the evaluator stops until the next
+  reload.
 
 ## Phasing
 
 | PR | Content |
 |---|---|
-| 5a | The engine import, the worker mirror and symbol watching, the main-thread `mutate` apply, the `paper_progress` table (a migration and its fixture), contract updates. Tests: the real `PaperAccount`; a limit, a stop, a stop loss and a take profit filling with no browser; a browser save racing a server fill; a stale `beforeunload` after a fill; a restart. |
-| 5b | Notifications (`NOTIFY_PAPER`), the status section, settings, docs (SELFHOSTED.md, the Unraid template), and a live run against a real feed. |
+| 5a | Presence (`boot.js`, `POST /api/selfhost/presence`, `index.html` renewal), the ownership state machine and handover, the evaluator with generations and its compare-and-swap commit, source-time freshness, the behavioural engine contracts. Deterministic tests, including: a browser change in the 300 ms timer is never replaced while present; an old tick never fills a newer order; cross-symbol buying power; a failed commit reloads; reset or import with queued messages; a lost `beforeunload` save across a handover; a restart. |
+| 5b | Notifications in the commit transaction, the coverage and status reporting, independent settings, docs (SELFHOSTED.md, the Unraid template), a live run against a real feed, and a pause for unsupported or stale symbols. |
 
 ## Open questions for the owner
 
-1. **Pushes:** push **every** server fill (default), or only stop loss, take profit and stop fills?
-2. **After a long gap:** fill orders crossed while the server was down on its first new price, like
-   upstream does when a tab reopens (default)? Or treat a gap longer than `ALERT_RESUME_MAX_GAP`
-   (15 min) as a fresh start, so nothing fills from the gap?
+1. **Pushes:** push every server fill and rejection (default), or only stop, stop-loss and take-profit fills?
+2. **REST prices:** server fills use streamed prices only (default, safest). Should REST fallback prices
+   also fill during a stream outage, accepting that they can be delayed?
 3. **Default on:** `PAPER_SERVER=true` by default (proposed), or opt-in?
 
 ## Risks
 
 - **Upstream changes the account format or fill rules.** The engine is imported, so fill rules follow
-  upstream automatically. The contract test fails on a format change before it reaches a release.
-- **A double fill from two engines.** Ruled out by deciding inside the transaction, against the stored
-  account (§2, §3).
-- **A user action replaced by a concurrent fill.** Visible and rare (§3). The alternative, merging the
-  account entry by entry, needs upstream's cooperation, which is out of scope.
+  upstream. The behavioural contract tests fail on a format or behaviour change before it reaches a release.
+- **No owner for up to 150 s after the last main window closes.** That is the cost of never having two
+  owners. It is shown in the status, and the lease can be tuned.
+- **A browser save lost on `beforeunload`.** That change is replaced visibly, with a notice, after the
+  handover. It is never merged silently.
+- **Excursions while nothing watched.** These are not reconstructed (§5), and the docs say so.
