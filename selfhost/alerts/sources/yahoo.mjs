@@ -1,0 +1,116 @@
+// Yahoo prices for the alert worker (PLAN §2.5.2): reads upstream's own relay,
+// GET /api/yahoo/stream?symbols=…, over loopback, so all of upstream's Yahoo logic is reused.
+// Upstream takes at most 100 symbols per stream, so symbols are sharded. Each shard reconnects
+// with exponential backoff, and a stream silent for longer than upstream's 20 s ping is reopened.
+//
+// Ticks: { s: "AAPL", p: price, t: time ms, m: session (0 pre, 1 regular, 2 post, 3 extended) }.
+
+export const MAX_PER_STREAM = 100;
+const SILENCE_MS = 60_000;
+const MIN_BACKOFF_MS = 1_000;
+const MAX_BACKOFF_MS = 30_000;
+
+/** The Yahoo ticker of an alert symbol, or null if another provider serves it. */
+export function yahooTicker(symbol) {
+  const s = String(symbol ?? '');
+  const i = s.indexOf(':');
+  if (i < 0) return s || null;
+  return s.slice(0, i).toUpperCase() === 'YAHOO' ? s.slice(i + 1) || null : null;
+}
+
+/** Parses an SSE byte stream; calls onData(text) for each `data:` event. Returns a push(chunk) function. */
+export function sseParser(onData) {
+  let buf = '';
+  let data = [];
+  return (chunk) => {
+    buf += chunk;
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      let line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      if (line.endsWith('\r')) line = line.slice(0, -1);
+      if (line === '') { if (data.length) { onData(data.join('\n')); data = []; } continue; }
+      if (line.startsWith(':')) continue;
+      if (line.startsWith('data:')) data.push(line.slice(line[5] === ' ' ? 6 : 5));
+    }
+    if (buf.length > 1_000_000) buf = ''; // a line that never ends is not a tick
+  };
+}
+
+/**
+ * createYahooSource({ baseUrl, headers, onTick, onState, fetch, log }) -> { setSymbols(tickers), close(), status() }
+ * onTick({ symbol: "YAHOO:AAPL", price, session, at }) for every tick; onState() when a shard connects or drops.
+ */
+export function createYahooSource({ baseUrl, headers = {}, onTick, onState = () => {}, fetch = globalThis.fetch, log, silenceMs = SILENCE_MS, maxPerStream = MAX_PER_STREAM }) {
+  let shards = [];
+  let closed = false;
+
+  function startShard(tickers) {
+    const shard = { tickers, connected: false, ctrl: null, stopped: false, retry: 0, lastData: 0 };
+    const url = `${baseUrl}/api/yahoo/stream?symbols=${tickers.map(encodeURIComponent).join(',')}`;
+    (async () => {
+      while (!shard.stopped && !closed) {
+        shard.ctrl = new AbortController();
+        let watchdog = null;
+        try {
+          const res = await fetch(url, { headers: { accept: 'text/event-stream', ...headers }, signal: shard.ctrl.signal });
+          if (!res.ok || !res.body) throw new Error(`relay answered ${res.status}`);
+          shard.connected = true;
+          shard.lastData = Date.now();
+          onState();
+          watchdog = setInterval(() => { if (Date.now() - shard.lastData > silenceMs) shard.ctrl.abort(new Error('stream silent')); }, Math.min(silenceMs, 10_000));
+          watchdog.unref?.();
+          const push = sseParser((text) => {
+            let t;
+            try { t = JSON.parse(text); } catch { return; }
+            if (!t || typeof t.s !== 'string' || !Number.isFinite(t.p)) return;
+            shard.retry = 0;
+            onTick({ symbol: `YAHOO:${t.s}`, price: t.p, session: Number.isInteger(t.m) ? t.m : 1, at: Date.now() });
+          });
+          const decoder = new TextDecoder();
+          for await (const chunk of res.body) {
+            shard.lastData = Date.now(); // pings count: the relay is alive
+            push(decoder.decode(chunk, { stream: true }));
+          }
+          throw new Error('stream ended');
+        } catch (e) {
+          if (shard.stopped || closed) break;
+          log?.debug?.('yahoo stream dropped', { error: e?.message, symbols: tickers.length });
+        } finally {
+          clearInterval(watchdog);
+          if (shard.connected) { shard.connected = false; onState(); }
+        }
+        const wait = Math.min(MAX_BACKOFF_MS, MIN_BACKOFF_MS * 2 ** shard.retry++);
+        await new Promise((r) => { const t = setTimeout(r, wait); t.unref?.(); shard.wake = r; });
+      }
+    })();
+    return shard;
+  }
+
+  function stopShard(s) { s.stopped = true; s.ctrl?.abort(); s.wake?.(); }
+
+  /** Watches exactly these tickers. Unchanged shards keep their connection. */
+  function setSymbols(tickers) {
+    const want = [...new Set(tickers)].sort();
+    const groups = [];
+    for (let i = 0; i < want.length; i += maxPerStream) groups.push(want.slice(i, i + maxPerStream));
+    const keyOf = (g) => g.join(',');
+    const keep = new Map(shards.map((s) => [keyOf(s.tickers), s]));
+    const next = [];
+    for (const g of groups) {
+      const k = keyOf(g);
+      if (keep.has(k)) { next.push(keep.get(k)); keep.delete(k); } else next.push(startShard(g));
+    }
+    for (const s of keep.values()) stopShard(s);
+    shards = next;
+    onState();
+  }
+
+  function close() { closed = true; for (const s of shards) stopShard(s); shards = []; }
+
+  function status() {
+    return { streams: shards.length, connected: shards.filter((s) => s.connected).length, symbols: shards.reduce((n, s) => n + s.tickers.length, 0) };
+  }
+
+  return { setSymbols, close, status };
+}

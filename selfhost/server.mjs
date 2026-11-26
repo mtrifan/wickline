@@ -7,6 +7,7 @@
 import http from 'node:http';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { injectBoot, isIndexPath } from './http/inject.mjs';
 import { clientKeyConfig } from './sync/key-policy.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -28,6 +29,7 @@ import { createNotifyRoutes } from './http/notify.mjs';
 import { createGotify } from './notify/gotify.mjs';
 import { createOutbox } from './notify/outbox.mjs';
 import { createAlertLedger } from './alerts/ledger.mjs';
+import { createAlertSupervisor } from './alerts/supervisor.mjs';
 import { holdServerLock, startBackupScheduler, sweepTemporaryFiles, DataDirInUseError } from './storage/backup.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -37,6 +39,15 @@ export const VERSION = {
   upstream: (() => { try { return JSON.parse(read('package.json')).version; } catch { return null; } })(),
   selfhost: read('selfhost/VERSION'),
 };
+
+/** Upstream routes the alert worker reads over loopback with the internal credential. */
+const INTERNAL_ROUTES = new Set(['/api/yahoo/stream', '/api/yahoo/quotes', '/api/yahoo/chart']);
+
+/** Where a client on this host reaches a server listening on `host`. */
+export function loopbackBase(host, port) {
+  const h = !host || host === '0.0.0.0' ? '127.0.0.1' : host === '::' ? '::1' : host;
+  return `http://${h.includes(':') ? `[${h}]` : h}:${port}`;
+}
 
 /** Routes reachable without logging in. Everything else, upstream's included, needs a session. */
 const PUBLIC_ROUTES = new Set(['GET /api/health/ready', 'HEAD /api/health/ready', 'GET /selfhost/login', 'POST /selfhost/login']);
@@ -97,6 +108,15 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   const [upstreamHandler] = internal.server.listeners('request');
   await new Promise((r) => internal.server.close(() => r()));
   if (typeof upstreamHandler !== 'function') throw new Error('Upstream server has no request handler (integration point server-start)');
+
+  const internalToken = randomBytes(32);
+  const internalHex = internalToken.toString('hex');
+  function isInternal(req, url) {
+    const given = Buffer.from(String(req.headers['x-wickline-internal']), 'utf8');
+    const sameHost = !!req.socket.remoteAddress && req.socket.remoteAddress === req.socket.localAddress;
+    const tokenOk = given.length === internalHex.length && timingSafeEqual(given, Buffer.from(internalHex));
+    return tokenOk && sameHost && req.method === 'GET' && INTERNAL_ROUTES.has(url.pathname);
+  }
 
   const cookieSecure = (info) => cfg.cookieSecure === 'true' || cfg.exposure === 'public' || (cfg.cookieSecure === 'auto' && info.proto === 'https');
 
@@ -164,6 +184,14 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     try { url = new URL(req.url, 'http://localhost'); } catch { return sendJson(res, 400, { error: 'Bad request' }); }
     const route = `${req.method} ${url.pathname}`;
 
+    // The alert worker reading upstream's market data. Only from this host (the socket's two ends
+    // share an address), only GET on INTERNAL_ROUTES, and only with the per-process credential,
+    // which never leaves this process.
+    if (req.headers['x-wickline-internal'] !== undefined) {
+      if (!isInternal(req, url)) return sendJson(res, 403, { error: 'Forbidden' });
+      return upstreamHandler(req, res);
+    }
+
     if (route === 'GET /api/health/ready' || route === 'HEAD /api/health/ready') {
       let dbOk = false;
       try { dbOk = db.prepare('SELECT 1 AS ok').get().ok === 1; } catch { /* not ready */ }
@@ -209,6 +237,10 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     if (url.pathname.startsWith('/api/selfhost/') && (await handleSync(req, res, url, auth)) !== false) return undefined;
     if (url.pathname.startsWith('/api/selfhost/') && (await handleAdmin(req, res, url)) !== false) return undefined;
     if (url.pathname.startsWith('/api/selfhost/notify/') && (await handleNotify(req, res, url)) !== false) return undefined;
+    if (url.pathname === '/api/selfhost/alerts/status') {
+      if (req.method !== 'GET') return sendJson(res, 405, { error: 'Method not allowed' }, { Allow: 'GET' });
+      return sendJson(res, 200, supervisor ? { enabled: true, ...supervisor.status() } : { enabled: false });
+    }
     if (url.pathname.startsWith('/api/selfhost/') || url.pathname.startsWith('/selfhost/')) return sendJson(res, 404, { error: 'Not found' });
 
     // Upstream's app and API (GET only upstream; it answers 405 to anything else).
@@ -230,6 +262,20 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
 
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(cfg.port, cfg.host, resolve); });
   const port = server.address().port;
+  // Server-side alerts (PLAN §2.5): a worker thread reads upstream's Yahoo relay over loopback.
+  const supervisor = cfg.alertsServer ? createAlertSupervisor({
+    ledger: alerts,
+    sync,
+    log,
+    workerData: {
+      baseUrl: loopbackBase(cfg.host, port),
+      token: internalHex,
+      extendedHours: cfg.alertExtendedHours,
+      resumeMaxGapMs: cfg.alertResumeMaxGapMin * 60_000,
+      maxSymbols: cfg.alertMaxSymbols,
+    },
+  }) : null;
+  supervisor?.start();
   state.ready = true;
   log.info('Wickline Self-Hosted started', { port, host: cfg.host, upstream: VERSION.upstream, selfhost: VERSION.selfhost, schema, migrated, backup, config: redacted(cfg) });
   if (cfg.authMode === 'none') log.warn('AUTHENTICATION IS DISABLED (AUTH_MODE=none). Anyone who can reach this port can use it.');
@@ -242,11 +288,12 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
       const done = new Promise((r) => server.close(() => r()));
       hub.close();
       backups.stop();
+      const workerStopped = supervisor ? supervisor.stop() : null; // stores the latest prices for resuming
       const drained = outbox.stop(); // a send in flight gets up to 5 s
       // Long-lived streams (SSE) never end on their own.
       server.closeIdleConnections();
       setTimeout(() => server.closeAllConnections(), 1000).unref();
-      await Promise.all([done, drained]);
+      await Promise.all([done, drained, workerStopped]);
       clearInterval(purgeTimer);
       try { db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* best effort */ }
       db.close();
@@ -256,7 +303,7 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
     return closing;
   }
 
-  return { server, port, close, state, db, store, sync, hub, outbox, alerts };
+  return { server, port, close, state, db, store, sync, hub, outbox, alerts, supervisor };
   } catch (e) {
     lock.release();
     throw e;

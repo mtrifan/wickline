@@ -73,6 +73,12 @@ code="$(put theme light 0)"; [ "$code" = 200 ] || fail "sync write returned $cod
 docker exec "$NAME" sh -c 'test -f /data/server.lock' || fail "no server lock while running"
 echo "ok: snapshot and boot.js injected, synced write accepted, server lock held"
 
+echo "== server-side alerts"
+st="$(curl -fsS -b "$JAR" "$BASE/api/selfhost/alerts/status")"
+echo "$st" | grep -q '"enabled":true' || fail "alert checker not enabled: $st"
+echo "$st" | grep -q '"running":true' || fail "alert worker not running: $st"
+echo "ok: alert worker thread running"
+
 echo "== backup inside the container"
 out="$(docker exec "$NAME" node selfhost/cli.mjs backup)" || fail "cli backup: $out"
 echo "$out" | grep -q 'backup written: /data/backups/wickline-' || fail "unexpected backup output: $out"

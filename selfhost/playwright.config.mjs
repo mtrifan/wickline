@@ -37,19 +37,19 @@ export default defineConfig({
     {
       command: 'node --disable-warning=ExperimentalWarning server.mjs',
       url: `http://127.0.0.1:${SELFHOST_PORT}/api/health/ready`,
-      env: { PORT: String(SELFHOST_PORT), HOST: '127.0.0.1', DATA_DIR: dataDir, WICKLINE_PASSWORD: PASSWORD, LOG_LEVEL: 'warn' },
+      env: { PORT: String(SELFHOST_PORT), HOST: '127.0.0.1', DATA_DIR: dataDir, WICKLINE_PASSWORD: PASSWORD, LOG_LEVEL: 'warn', ALERTS_SERVER: 'false' },
       reuseExistingServer: false,
     },
     {
       command: 'node --disable-warning=ExperimentalWarning server.mjs',
       url: `http://127.0.0.1:${TOTP_PORT}/api/health/ready`,
-      env: { PORT: String(TOTP_PORT), HOST: '127.0.0.1', DATA_DIR: totpDir, WICKLINE_PASSWORD: PASSWORD, WICKLINE_TOTP_SECRET: TOTP_SECRET, LOG_LEVEL: 'warn' },
+      env: { PORT: String(TOTP_PORT), HOST: '127.0.0.1', DATA_DIR: totpDir, WICKLINE_PASSWORD: PASSWORD, WICKLINE_TOTP_SECRET: TOTP_SECRET, LOG_LEVEL: 'warn', ALERTS_SERVER: 'false' },
       reuseExistingServer: false,
     },
     {
       command: 'node --disable-warning=ExperimentalWarning server.mjs',
       url: `http://127.0.0.1:${SYNC_PORT}/api/health/ready`,
-      env: { PORT: String(SYNC_PORT), HOST: '127.0.0.1', DATA_DIR: syncDir, WICKLINE_PASSWORD: PASSWORD, LOG_LEVEL: 'warn' },
+      env: { PORT: String(SYNC_PORT), HOST: '127.0.0.1', DATA_DIR: syncDir, WICKLINE_PASSWORD: PASSWORD, LOG_LEVEL: 'warn', ALERTS_SERVER: 'false' },
       reuseExistingServer: false,
     },
     {
