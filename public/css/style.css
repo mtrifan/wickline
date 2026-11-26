@@ -175,8 +175,8 @@ kbd { font: 11px var(--mono); color: var(--muted); margin-left: auto; }
 }
 .toolbar button { color: var(--text); border-radius: var(--radius); }
 .tool-group { position: relative; display: flex; }
-.tool-group > button[data-tool], #clear-drawings { width: 36px; height: 36px; display: grid; place-items: center; }
-.toolbar button[data-tool]:hover, #clear-drawings:hover { background: var(--panel-2); }
+.tool-group > button[data-tool], #clear-drawings, #magnet-btn { width: 36px; height: 36px; display: grid; place-items: center; }
+.toolbar button[data-tool]:hover, #clear-drawings:hover, #magnet-btn:hover { background: var(--panel-2); }
 .toolbar button.on { color: var(--accent-text); background: var(--accent-soft); }
 .tool-more {
   position: absolute; right: -5px; top: 0; bottom: 0; width: 10px;
@@ -229,6 +229,13 @@ body[data-resizing] .cell { pointer-events: none; }
 }
 .chart-host.drawing { cursor: crosshair; }
 
+/* "Go to the latest candle" (chart-view.js updateToLatest), in the corner of the price pane. */
+.to-latest {
+  position: absolute; z-index: 5; width: 30px; height: 30px; display: grid; place-items: center;
+  border-radius: 50%; background: var(--panel-2); color: var(--text-strong); border: 1px solid var(--border);
+  box-shadow: var(--shadow); opacity: 0.85; cursor: pointer;
+}
+.to-latest:hover { opacity: 1; background: var(--accent-soft); color: var(--accent-text); }
 .cell-tools {
   position: absolute; top: 6px; right: 74px; z-index: 5;
   display: flex; gap: 2px; padding: 2px;
@@ -253,6 +260,20 @@ body.popout .hide-popout { display: none; }
 .db-colors button.on { border-color: var(--text-strong); }
 .draw-bar > button { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 4px; color: var(--muted); }
 .draw-bar > button:hover { color: var(--text-strong); background: var(--panel-2); }
+.draw-bar > button.db-labels.on { color: var(--text-strong); }
+.db-stroke { display: flex; align-items: center; gap: 2px; }
+.db-stroke button { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 4px; color: var(--muted); }
+.db-stroke button:hover { color: var(--text-strong); background: var(--panel-2); }
+.db-stroke button.on { color: var(--text-strong); background: var(--accent-soft); }
+.db-width { display: flex; align-items: center; gap: 3px; margin-left: 4px; color: var(--muted); font-size: 11px; }
+.db-width input {
+  width: 46px; height: 26px; padding: 0 4px;
+  background: var(--bg); color: var(--text-strong);
+  border: 1px solid var(--panel-2); border-radius: 4px; font: inherit;
+}
+.db-size { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
+.db-size input { width: 90px; accent-color: var(--accent, #4FA3F7); }
+.db-size output { min-width: 30px; font-variant-numeric: tabular-nums; }
 .db-text {
   width: 160px; height: 26px; padding: 0 8px;
   background: var(--bg); color: var(--text-strong);
@@ -263,7 +284,8 @@ body.popout .hide-popout { display: none; }
 .legend, .pane-legend {
   position: absolute; left: 10px; z-index: 3;
   pointer-events: none; max-width: calc(100% - 90px);
-  text-shadow: 0 0 3px var(--bg), 0 0 3px var(--bg), 0 0 2px var(--bg);
+  /* A halo in the chart's own color: invisible on the background, it keeps text readable over lines and candles. */
+  text-shadow: 0 0 2px var(--chart-bg, var(--bg)), 0 0 2px var(--chart-bg, var(--bg));
 }
 .legend { top: 6px; }
 .pane-legends { position: absolute; inset: 0; pointer-events: none; }
@@ -288,8 +310,13 @@ body.popout .hide-popout { display: none; }
 .lg-vals b { font-weight: 500; }
 .lg-err { color: var(--down); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 420px; }
 .lg-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; margin-left: 2px; }
-.lg-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.12s; }
-.lg-row:hover .lg-actions { opacity: 1; }
+.lg-actions { display: flex; gap: 2px; }
+.lg-actions button { opacity: 0; transition: opacity 0.12s; }
+.lg-row:hover .lg-actions button { opacity: 1; }
+/* Remove stays faintly visible, so it can be found without hovering first. */
+.lg-actions button[data-act="remove"], .lg-actions button[data-act="rm-cmp"] { opacity: 0.45; }
+.lg-row.off .lg-name { opacity: 0.5; }
+.lg-row.off .lg-actions button[data-act="eye"] { opacity: 1; }
 .lg-actions button { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 4px; color: var(--muted); }
 .lg-actions button:hover { color: var(--text-strong); background: var(--panel-2); }
 
@@ -598,6 +625,8 @@ body.popout .hide-popout { display: none; }
 .sr-badge::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--src, var(--muted)); }
 .sr-badge[data-src="binance"] { --src: #F0B90B; }
 .sr-badge[data-src="coinbase"] { --src: #3B82F6; }
+.sr-badge[data-src="bybit"] { --src: #F7A600; }
+.sr-badge[data-src="okx"] { --src: #9CA3AF; }
 .sr-badge[data-src="yahoo"] { --src: #8B5CF6; }
 .sr-badge[data-src="twelvedata"] { --src: #14B8A6; }
 .sr-empty { padding: 18px 12px; color: var(--muted); }
@@ -686,6 +715,31 @@ body.popout .hide-popout { display: none; }
 .pop-field input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
 .pop-note { color: var(--muted); margin: 0 0 10px; }
 .pop-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+/* The point editor (point-editor.js, issue #6): exact prices, dates and a label for a drawing. */
+.point-editor .pop-section:first-of-type { margin-top: 0; padding-top: 0; border-top: 0; }
+.pe-field { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: center; gap: 8px; margin-bottom: 6px; }
+.pe-field span { color: var(--muted); font-size: 12px; }
+.pe-field input {
+  min-width: 0; height: 28px; padding: 0 8px; font: inherit; font-variant-numeric: tabular-nums;
+  background: var(--bg); color: var(--text-strong); border: 1px solid var(--panel-2); border-radius: var(--radius);
+}
+.pe-field input:focus { outline: none; border-color: var(--accent); }
+.pop-section { margin: 10px 0 6px; padding-top: 8px; border-top: 1px solid var(--panel-2); color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.pop-section:empty { margin: 8px 0; padding: 0; }
+.fib-levels { max-height: 220px; overflow-y: auto; }
+.fib-row { display: grid; grid-template-columns: 18px 1fr 34px 22px; align-items: center; gap: 8px; margin-bottom: 6px; }
+.fib-row input[type="text"] {
+  min-width: 0; height: 28px; padding: 0 8px;
+  background: var(--bg); color: var(--text-strong);
+  border: 1px solid var(--panel-2); border-radius: var(--radius); font: inherit;
+}
+.fib-row input[type="text"]:focus { outline: none; border-color: var(--accent); }
+.fib-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+.fib-row input[type="color"] { width: 34px; height: 26px; padding: 0; border: 1px solid var(--panel-2); border-radius: 4px; background: none; cursor: pointer; }
+.fib-row button { width: 22px; height: 22px; border-radius: 4px; color: var(--muted); font-size: 16px; line-height: 1; }
+.fib-row button:hover { color: var(--text-strong); background: var(--panel-2); }
+.fib-add { width: 100%; height: 28px; margin-top: 2px; font-weight: 500; }
+.fib-add:disabled { opacity: 0.45; cursor: default; }
 .btn-primary, .btn-ghost { height: 32px; padding: 0 14px; border-radius: var(--radius); font-weight: 600; }
 .btn-primary { background: var(--accent); color: var(--on-accent); }
 .btn-primary:hover { background: var(--accent-hover); }
@@ -751,7 +805,7 @@ body.popout .hide-popout { display: none; }
     box-shadow: -12px 0 30px rgba(0, 0, 0, 0.45);
   }
   .brand span, .tb-btn span, .hide-sm { display: none; }
-  .tool-group > button[data-tool], #clear-drawings { width: 34px; height: 34px; }
+  .tool-group > button[data-tool], #clear-drawings, #magnet-btn { width: 34px; height: 34px; }
   .sr-row { grid-template-columns: 90px minmax(0, 1fr) auto; }
   .sr-type, .sr-exch { display: none; }
   .sr-src { min-width: 0; }

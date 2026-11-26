@@ -79,3 +79,31 @@ jobs:
           if [ ${#files[@]} -eq 0 ]; then echo "No build files found"; exit 1; fi
           ls -l "${files[@]}"
           gh release upload "v$V" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+
+  # After all three builds: a SHA-256 for every download, as SHA256SUMS.txt and at the end of the
+  # release notes (with a VirusTotal link for each), so anyone can check a file is the one built here.
+  checksums:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add SHA-256 checksums to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V="$(node -p "require('./package.json').version")"
+          mkdir dl && cd dl
+          gh release download "v$V" --repo "$GITHUB_REPOSITORY" --pattern '*.exe' --pattern '*.dmg' --pattern '*.AppImage' --pattern '*.deb'
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release upload "v$V" SHA256SUMS.txt --clobber --repo "$GITHUB_REPOSITORY"
+          # Re-runs replace the section instead of adding a second one.
+          gh release view "v$V" --repo "$GITHUB_REPOSITORY" --json body -q .body | sed '/^## Checksums (SHA-256)/,$d' > notes.md
+          {
+            echo '## Checksums (SHA-256)'
+            echo
+            echo 'Every file is built by GitHub Actions straight from the public code. To check a download, compare its SHA-256 with this list (Windows: `certutil -hashfile <file> SHA256`; Mac and Linux: `shasum -a 256 <file>`), or look it up on VirusTotal:'
+            echo
+            while read -r h f; do f="${f#\*}"; echo "- \`$f\`: \`$h\` ([VirusTotal](https://www.virustotal.com/gui/file/$h))"; done < SHA256SUMS.txt
+          } >> notes.md
+          gh release edit "v$V" --repo "$GITHUB_REPOSITORY" --notes-file notes.md

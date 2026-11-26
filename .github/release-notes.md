@@ -15,4 +15,4 @@
 
 No account, no API key: stocks, crypto, the screener, the heatmap, options, news, bar replay and paper trading work right away.
 
-**Language:** English, 简体中文, 繁體中文, 日本語, 한국어, Español, Português (Brasil). It follows your system; change it under ⚙ → Language. Where data sources are blocked, set a proxy under ⚙ → Network proxy.
+**Language:** English, 简体中文, 繁體中文, 日本語, 한국어, Español, Português (Brasil), Italiano, Deutsch, Français. It follows your system; change it under ⚙ → Language. Where data sources are blocked, set a proxy under ⚙ → Network proxy.

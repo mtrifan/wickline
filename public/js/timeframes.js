@@ -94,6 +94,9 @@ export const TF_GROUPS = [
 export const NATIVE = {
   binance: { '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1h', '2h': '2h', '4h': '4h', '6h': '6h', '8h': '8h', '12h': '12h', '1D': '1d', '1W': '1w', '1M': '1M' },
   coinbase: { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '6h': 21600, '1D': 86400 }, // granularity in seconds
+  bybit: { '1m': '1', '3m': '3', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '2h': '120', '4h': '240', '6h': '360', '12h': '720', '1D': 'D', '1W': 'W', '1M': 'M' },
+  // OKX's 6h and longer bars default to Hong Kong time; the "utc" ones start at 00:00 UTC like everyone else's.
+  okx: { '1m': '1m', '3m': '3m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '1H', '2h': '2H', '4h': '4H', '6h': '6Hutc', '12h': '12Hutc', '1D': '1Dutc', '1W': '1Wutc', '1M': '1Mutc' },
   // Not Yahoo's 90m: it restarts at the open and close (8:30, 9:30 … 15:30, 16:00), which the
   // server's merging of close points would fold together. 90m from 30m has the same 60 days.
   yahoo: { '1m': '1m', '2m': '2m', '5m': '5m', '15m': '15m', '30m': '30m', '1h': '60m', '1D': '1d', '1W': '1wk', '1M': '1mo' },

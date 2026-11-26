@@ -15,16 +15,21 @@ export class BandFill {
     this.fill = fill;
     this.chart = null;
     this.series = null;
+    this.hidden = false;
+    this._request = null;
     this._views = [{ zOrder: () => 'bottom', renderer: () => ({ draw: (t) => this.draw(t) }) }];
   }
 
-  attached({ chart, series }) { this.chart = chart; this.series = series; }
-  detached() { this.chart = null; this.series = null; }
+  attached({ chart, series, requestUpdate }) { this.chart = chart; this.series = series; this._request = requestUpdate; }
+  detached() { this.chart = null; this.series = null; this._request = null; }
   updateAllViews() {}
   paneViews() { return this._views; }
 
+  /** Hidden bands draw nothing (the indicator's eye button); the chart redraws right away. */
+  setHidden(on) { this.hidden = on; this._request?.(); }
+
   draw(target) {
-    const arrays = this.getArrays();
+    const arrays = this.hidden ? null : this.getArrays();
     if (!arrays || !this.series || !this.chart) return;
     const { a, b } = arrays;
     const ts = this.chart.timeScale();
@@ -74,16 +79,20 @@ export class TradeLines {
     this.getData = getData;
     this.chart = null;
     this.series = null;
+    this.hidden = false;
+    this._request = null;
     this._views = [{ zOrder: () => 'normal', renderer: () => ({ draw: (t) => this.draw(t) }) }];
   }
 
-  attached({ chart, series }) { this.chart = chart; this.series = series; }
-  detached() { this.chart = null; this.series = null; }
+  attached({ chart, series, requestUpdate }) { this.chart = chart; this.series = series; this._request = requestUpdate; }
+  detached() { this.chart = null; this.series = null; this._request = null; }
   updateAllViews() {}
   paneViews() { return this._views; }
 
+  setHidden(on) { this.hidden = on; this._request?.(); }
+
   draw(target) {
-    const data = this.getData();
+    const data = this.hidden ? null : this.getData();
     if (!data || !this.chart || !this.series) return;
     const ts = this.chart.timeScale();
     const range = ts.getVisibleLogicalRange();

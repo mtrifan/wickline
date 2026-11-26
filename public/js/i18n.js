@@ -1,5 +1,5 @@
 // UI language: English (also the fallback for any missing text), Simplified and Traditional Chinese,
-// Japanese, Korean, Spanish and Brazilian Portuguese.
+// Japanese, Korean, Spanish, Brazilian Portuguese, Italian, German and French.
 // The dictionaries are flat { key: text } objects in js/lang/<id>.js; English is the source.
 // Text may hold {name} placeholders, and a value may be { one, other } for plurals (picked by
 // Intl.PluralRules from vars.n). Switching the language saves it and reloads the page, so a
@@ -12,6 +12,9 @@ import zhTW from './lang/zh-TW.js';
 import ko from './lang/ko.js';
 import es from './lang/es.js';
 import ptBR from './lang/pt-BR.js';
+import it from './lang/it.js';
+import de from './lang/de.js';
+import fr from './lang/fr.js';
 
 /** name: in its own language (the picker shows it as is); locale: the Intl default for numbers and dates. */
 export const LANGUAGES = [
@@ -22,13 +25,16 @@ export const LANGUAGES = [
   { id: 'ko', name: '한국어', locale: 'ko-KR' },
   { id: 'es', name: 'Español', locale: 'es-ES' },
   { id: 'pt-BR', name: 'Português (Brasil)', locale: 'pt-BR' },
+  { id: 'it', name: 'Italiano', locale: 'it-IT' },
+  { id: 'de', name: 'Deutsch', locale: 'de-DE' },
+  { id: 'fr', name: 'Français', locale: 'fr-FR' },
 ];
-const DICTS = { en, 'zh-CN': zhCN, 'zh-TW': zhTW, ja, ko, es, 'pt-BR': ptBR };
+const DICTS = { en, 'zh-CN': zhCN, 'zh-TW': zhTW, ja, ko, es, 'pt-BR': ptBR, it, de, fr };
 const KEY = 'wickline.lang';
 
 /**
  * A system language tag -> a UI language: zh-TW / zh-HK / zh-MO / zh-Hant* -> 'zh-TW', other zh -> 'zh-CN',
- * ja* -> 'ja', ko* -> 'ko', es* -> 'es', pt* -> 'pt-BR', anything else -> 'en'.
+ * ja* -> 'ja', ko* -> 'ko', es* -> 'es', pt* -> 'pt-BR', it* -> 'it', de* -> 'de', fr* -> 'fr', anything else -> 'en'.
  */
 export function langFromLocale(tag) {
   const parts = String(tag || '').toLowerCase().split(/[-_]/);
@@ -38,6 +44,9 @@ export function langFromLocale(tag) {
     case 'ko': return 'ko';
     case 'es': return 'es';
     case 'pt': return 'pt-BR';
+    case 'it': return 'it';
+    case 'de': return 'de';
+    case 'fr': return 'fr';
     default: return 'en';
   }
 }

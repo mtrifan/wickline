@@ -17,14 +17,14 @@ A free, open-source charting platform.
 ## Features
 
 **Markets & data**
-- Crypto from **Binance** (spot), **Binance Futures** (USDⓈ-M perpetuals) and **Coinbase**: every trade moves the chart in real time. No key needed.
+- Crypto from **Binance** (spot), **Binance Futures** (USDⓈ-M perpetuals), **Coinbase**, **Bybit** and **OKX** (spot and USDT/USDC perpetuals on both): every trade moves the chart in real time. No key needed.
 - Stocks, ETFs, indices, forex and futures worldwide, from Yahoo with no key. Live trades come from Yahoo's public stream. See [Data sources](#data-sources).
 - **Markets panel with complete markets:** filter by name, sector or quote coin, and sort by size, gainers, losers or A–Z. Only on-screen rows are drawn and live-updated, so thousands of rows stay fast.
   - All 7,233 US-listed stocks and 5,524 US ETFs.
-  - Every pair on Binance (3,000+), Binance Futures (800+) and Coinbase (500+).
+  - Every pair on Binance (3,000+), Binance Futures (800+), Coinbase (500+), Bybit and OKX (spot and perpetuals, 500 to 1,200 each).
 - **Curated lists:** 283 hand-picked instruments in 12 groups (world indices, European and Asian stocks, forex, commodities, futures, bond yields…).
 - **Live screeners:** top gainers, losers, most active, trending, and more.
-- **Symbol search:** one box searches every source at once (stocks, funds, indices, forex, futures and every crypto exchange). Each result shows its exchange and where its data comes from (Yahoo, Binance, Binance Futures, Coinbase).
+- **Symbol search:** one box searches every source at once (stocks, funds, indices, forex, futures and every crypto exchange). Each result shows its exchange and where its data comes from (Yahoo, Binance, Binance Futures, Coinbase, Bybit, OKX).
 - **Network proxy** for places where Yahoo, Binance or GitHub are blocked: the desktop app uses your system proxy, or an HTTP or SOCKS5 proxy you set (Clash, v2rayN…). Every data source, news and the update check go through it, and a change applies at once. See [Using a proxy](#using-a-proxy).
 
 **Screener: find stocks to trade**
@@ -46,7 +46,7 @@ A free, open-source charting platform.
 
 **Options**
 - The option chain of the chart's symbol: US stocks and ETFs from Yahoo (about 15 minutes delayed), Bitcoin and Ether from Deribit (real time). Other symbols say they have no options.
-- Pick an expiry (with the days left). A strip shows the price, the at-the-money IV, the expected move (the at-the-money straddle, and ±1σ from IV), put/call ratios by volume and open interest, and max pain.
+- Pick an expiry from a list grouped by month (with the days left, and an M or W badge for monthly or weekly: for stocks the monthly is the third Friday; on Deribit it is the last Friday of the month, and D marks its dailies). A strip shows the price, the at-the-money IV, the expected move (the at-the-money straddle, and ±1σ from IV), put/call ratios by volume and open interest, and max pain.
 - The chain lists calls | strike | puts with last, bid, ask, volume, open interest, IV and delta, in-the-money contracts shaded, opening on the current price. Hover a contract for its gamma, theta and vega (Black-Scholes with a 4% risk-free rate; Deribit's on the expiry's forward price). Click a Yahoo contract to open its own chart.
 - Beside it: open interest by strike (calls up, puts down, the price and max pain marked) and unusual activity, the contracts trading at least twice their open interest.
 - Outside US market hours Yahoo has no bids or asks and no open interest, so IV and Greeks come from last trades and max pain waits for the open.
@@ -106,6 +106,7 @@ A free, open-source charting platform.
   - **Volume:** Volume, OBV, A/D, CMF, Chaikin Oscillator, PVT, Volume Oscillator, Klinger, Ease of Movement, Negative and Positive Volume Index, PVO, Volume-Weighted MACD.
   - **Volatility:** ATR, Historical Volatility, BB Width, Standard Deviation, ATR %, Chaikin Volatility, Ulcer Index, Mass Index, Relative Volatility Index.
 - Shaded bands and clouds; every setting and color is editable.
+- **Hide without removing:** the eye button next to an indicator in the legend hides everything it draws (lines, bands, markers, trade lines) and brings it back with the same settings.
 - **Your own indicators in JavaScript**, with a built-in editor. See [below](#writing-your-own-indicators).
 - **Community scripts:** browse indicators and strategies other traders published (Indicators → **Community**), sort by most liked or newest, and add one to your chart with a click. Publish your own from the script editor. See [Sharing scripts](#sharing-scripts-with-everyone).
 
@@ -120,6 +121,7 @@ A free, open-source charting platform.
 - **On the chart:** entry and exit markers, plus a line from each entry to its exit.
 
 **Bar replay and paper trading**
+- **Back to now:** scrolled back in history, the » button in the corner of the chart brings the latest candle back into view.
 - **Bar replay:** go back to any point in history and replay the chart candle by candle.
   - Start from a candle you click, a date, or a random point.
   - Step one candle at a time, or play at 0.5× to 10× (candles per second).
@@ -136,10 +138,16 @@ A free, open-source charting platform.
 **Drawing & alerts**
 - **Drawing tools:**
   - **Lines:** trend line, ray, extended line, arrow.
-  - **Levels:** horizontal line, horizontal ray, vertical line.
+  - **Levels:** horizontal line, horizontal ray, vertical line, anchored VWAP (the volume-weighted average price from the bar you click on).
   - **Shapes & text:** rectangle, parallel channel, text.
-  - **Analysis:** Fibonacci retracement, measure, long position, short position.
-- **Editing:** drag drawings and their handles. Change colors from the drawing's toolbar.
+  - **Arrow symbols:** up and down arrows with an optional label (a count, a note…) and an adjustable size; the label and the arrow scale together.
+  - **Analysis:** Fibonacci retracement, measure, long position, short position (click the entry, then the target; or click twice in one spot for a ready-made one).
+- **Editing:** drag drawings and their handles. Change colors from the drawing's toolbar, and hide the labels of a position or anchored VWAP there too.
+- **Exact values:** double-click a drawing (or press the pencil in its toolbar) to type the price and date of each of its points, the entry, target and stop of a position, and a label for a line, level or rectangle.
+- **Magnet:** the magnet button in the drawing toolbar cycles **off → weak → strong**. Weak snaps a point you place or drag to the bar's open, high, low or close when the pointer is close to it; strong always snaps to the nearest of the four. A ring shows where it is snapping.
+- **Fib retracement settings:** the gear on a selected Fib opens its levels and options. Change a level's number (0.5 is 50%; "50%" works too), color, or turn it off; add or remove levels; show or hide the trend line, level numbers, prices and the background; extend the lines to the left or right; and space the levels on a log scale.
+- **Line style:** a selected trend line, ray, extended line, arrow, channel or level line can be solid, dashed or dotted, and any thickness from 1 to 20 px, from the drawing's toolbar.
+- **Level lines on demand:** hold **Shift** while placing or dragging a trend line, ray, extended line, arrow or channel and it snaps to exactly 0°.
 - **Price alerts:** crossing, crossing up or crossing down. You get a sound, an on-screen message and an optional desktop notification. Create them from a horizontal line with one click.
 
 **Everything else**
@@ -148,7 +156,7 @@ A free, open-source charting platform.
 - Shareable links, such as `/#s=YAHOO:AAPL&tf=1D`.
 - Save the chart as a PNG.
 - Keyboard shortcuts.
-- **In seven languages:** English, Simplified and Traditional Chinese (简体中文, 繁體中文), Japanese (日本語), Korean (한국어), Spanish (Español) and Brazilian Portuguese (Português). The UI follows your system's language; change it under ⚙ (Data sources) → **Language**.
+- **In ten languages:** English, Simplified and Traditional Chinese (简体中文, 繁體中文), Japanese (日本語), Korean (한국어), Spanish (Español), Brazilian Portuguese (Português), Italian (Italiano), German (Deutsch) and French (Français). The UI follows your system's language; change it under ⚙ (Data sources) → **Language**.
 - Works on phones.
 
 ## Get it
@@ -178,7 +186,7 @@ Where Yahoo, Binance or GitHub are blocked (in China, for example), send the app
 - **Manual:** an HTTP proxy as `host:port`, e.g. `127.0.0.1:7890` for Clash's local port, or a SOCKS5 proxy as `socks5://127.0.0.1:1080`. Proxies that need a password aren't supported.
 - **Off:** connect directly.
 
-It covers everything the app fetches: Yahoo, Nasdaq, Binance, Coinbase, CoinGecko, Deribit, news, community scripts and the update check. The app's own server on `127.0.0.1` is never proxied.
+It covers everything the app fetches: Yahoo, Nasdaq, Binance, Coinbase, Bybit, OKX, CoinGecko, Deribit, news, community scripts and the update check. The app's own server on `127.0.0.1` is never proxied.
 
 With `npm start`, set the proxy for the server in `WICKLINE_PROXY` (or the usual `HTTPS_PROXY` / `ALL_PROXY`), e.g. `WICKLINE_PROXY=socks5://127.0.0.1:1080 npm start`. The page itself, like the website version, uses your browser's proxy settings.
 
@@ -218,7 +226,7 @@ npx serve public
 
 **The desktop app and `npm start` need no API key.** They come with a small built-in server (`server.mjs`, Node.js 22+, no dependencies unless it goes through a [proxy](#using-a-proxy)). It reads Yahoo Finance and Nasdaq for stocks, and the exchanges' public feeds for crypto.
 - **Yahoo** supplies stocks, ETFs, indices, forex and futures: history, live trades, screeners, news, the economic calendar and earnings.
-- **Binance, Binance Futures and Coinbase** supply crypto, with every trade in real time.
+- **Binance, Binance Futures, Coinbase, Bybit and OKX** supply crypto, with every trade in real time.
 - **CoinGecko** (its free API, no key) supplies the crypto heatmap's market caps and changes, fetched at most every 3 minutes.
 - **Deribit** (its public API, no key) supplies Bitcoin and Ether option chains in real time. US stock and ETF option chains come from Yahoo, about 15 minutes delayed.
 
@@ -233,7 +241,7 @@ This applies only if you host `public/` as a static website. A web page can't re
 
 | | Website (static) | Desktop app, or `npm start` |
 | --- | --- | --- |
-| Crypto: Binance, Binance Futures, Coinbase | ✅ live, no key | ✅ |
+| Crypto: Binance, Binance Futures, Coinbase, Bybit, OKX | ✅ live, no key | ✅ |
 | Indicators, scripts, backtesting, drawings, alerts | ✅ | ✅ |
 | Stocks, ETFs, indices, forex: history | ✅ with the visitor's free Twelve Data key | ✅ Yahoo, no key |
 | Stocks, ETFs, indices, forex: live trades | ✅ Yahoo's public stream, no key | ✅ |
@@ -266,7 +274,9 @@ A static site can also skip the key by pointing at someone's running server unde
 | `Alt+A` | Create a price alert |
 | `Alt+T` · `Alt+H` · `Alt+V` | Trend line · horizontal line · vertical line |
 | `Alt+R` · `Alt+C` · `Alt+X` | Rectangle · parallel channel · text |
-| `Alt+F` · `Alt+M` | Fib retracement · measure |
+| `Alt+F` · `Alt+M` · `Alt+W` | Fib retracement · measure · anchored VWAP |
+| `Alt+↑` · `Alt+↓` | Arrow up · arrow down (type its label right after placing it) |
+| `Shift` (while drawing) | Snap the line you are placing or dragging to 0° |
 | `Alt+Enter` | Maximize / restore the active chart |
 | `Shift+→` · `Shift+↓` | In a replay: next candle · play / pause |
 | `Esc` | Cancel drawing / choosing a replay start / close dialog |
@@ -287,6 +297,8 @@ Symbols are written as `SOURCE:TICKER`:
 | `BINANCE:BTCUSDT` | Crypto spot (any Binance pair) |
 | `BINANCEF:BTCUSDT` | Crypto perpetual (Binance USDⓈ-M futures, shown as `BTCUSDT.P`) |
 | `COINBASE:BTC-USD` | Crypto spot on Coinbase |
+| `BYBIT:BTCUSDT` · `BYBITF:BTCUSDT` | Bybit spot · Bybit perpetual (shown as `BTCUSDT.P`) |
+| `OKX:BTC-USDT` · `OKXF:BTC-USDT` | OKX spot · OKX perpetual swap (shown as `BTC-USDT.P`) |
 | `YAHOO:AAPL` · `YAHOO:VOW3.DE` · `YAHOO:7203.T` | Stocks (Yahoo suffixes for other exchanges) |
 | `YAHOO:SPY` | ETF |
 | `YAHOO:^GSPC` · `YAHOO:^GDAXI` | Indices |
@@ -421,7 +433,7 @@ Desktop app (desktop/main.mjs, Electron):
   └── a window on http://127.0.0.1:41573 ─▶ the web app below + the server, on your machine only
 
 Web app (public/, plain static files), in the window or any browser:
-  ├── Binance · Binance Futures · Coinbase ......... crypto history + every trade (WebSocket)
+  ├── Binance · Binance Futures · Coinbase · Bybit · OKX  crypto history + every trade (WebSocket)
   ├── Yahoo live price stream (WebSocket) .......... live stock/forex trades
   ├── Server, if present (detected via /api/health)
   │     └── /api/yahoo/*, /api/universe/* ─▶ Yahoo Finance, Nasdaq   (keyless stocks, screeners, live lists)
@@ -463,7 +475,7 @@ Charts are rendered with [TradingView Lightweight Charts™](https://www.trading
 ## Data notes and limits
 
 - **Crypto exchanges** need no keys.
-  - Binance and Binance Futures aren't available in some countries (for example the US). There, use Coinbase symbols or Yahoo's, such as `YAHOO:BTC-USD`.
+  - Binance, Binance Futures and Bybit aren't available in some countries (for example the US). There, use Coinbase symbols or Yahoo's, such as `YAHOO:BTC-USD`.
   - Coinbase history is fetched in pages, so it's shorter than Binance's.
 - **Twelve Data** (only on a self-hosted static website) is an official API with a free plan: 800 requests a day, 8 per minute.
   - Wickline queues requests to stay within the limit. Raise the limit in ⚙ if you have a paid plan.
@@ -503,4 +515,4 @@ Contributions are welcome. Open an issue or a pull request.
 
 Charts are powered by [TradingView Lightweight Charts™](https://github.com/tradingview/lightweight-charts) (Apache-2.0), © TradingView, Inc. Its license requires attribution, which the TradingView logo on the chart and the link in the status bar provide. Keep them, or add equivalent attribution, if you modify Wickline.
 
-Wickline is an independent project and is not affiliated with or endorsed by TradingView, Binance, Coinbase or Yahoo.
+Wickline is an independent project and is not affiliated with or endorsed by TradingView, Binance, Coinbase, Bybit, OKX or Yahoo.

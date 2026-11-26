@@ -55,6 +55,7 @@ export class StrategyTester {
     });
     this.select.addEventListener('change', () => { this.entryId = this.select.value; this.render(); });
     $('#st-close').addEventListener('click', () => this.close());
+    $('#st-add').addEventListener('click', () => this.browseStrategies?.());
     this.content.addEventListener('click', (e) => this.onClick(e));
     this.content.addEventListener('submit', (e) => { e.preventDefault(); this.applyProps(); });
     this.content.addEventListener('keydown', (e) => e.stopPropagation());

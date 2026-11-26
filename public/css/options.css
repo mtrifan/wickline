@@ -2,7 +2,35 @@
 .options { height: 440px; }
 .op-symbol { font-weight: 700; color: var(--text-strong); margin-right: 4px; white-space: nowrap; }
 .op-tools { display: flex; align-items: center; gap: 8px; margin-left: 4px; font-size: 12px; white-space: nowrap; }
-.op-tools .select { height: 28px; font-size: 12px; max-width: 220px; }
+/* Expiry: a button with the picked date and its M / W / D badge, opening a list of every expiry by month. */
+.op-exp-btn { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 9px 0 10px; font-size: 12px; cursor: pointer; background-image: none; }
+.op-exp-btn[aria-expanded="true"] { background-color: var(--panel-2); }
+.op-exp-caret { color: var(--muted); flex: none; }
+.op-kind {
+  display: inline-grid; place-items: center; min-width: 17px; height: 16px; padding: 0 4px; border-radius: 4px;
+  font-style: normal; font-size: 10px; font-weight: 700; line-height: 1; border: 1px solid var(--border); color: var(--muted);
+}
+.op-kind.op-monthly { border-color: var(--text-strong); background: var(--text-strong); color: var(--panel); } /* neutral: red means puts, losses and "picked" */
+.op-kind.op-daily { border-color: transparent; }
+.op-exp-menu { min-width: 200px; overflow-y: auto; overscroll-behavior: contain; }
+.op-exp-menu .menu-title { position: sticky; top: -6px; z-index: 1; margin: 0 -6px; padding: 8px 16px 4px; background: var(--panel); }
+.op-exp-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; height: 30px; padding: 0 10px; border-radius: var(--radius);
+  font: inherit; font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--text); text-align: left; background: none; border: 0; cursor: pointer;
+}
+.op-exp-row span { flex: 1; }
+.op-exp-row small { min-width: 34px; text-align: right; font-size: 11.5px; color: var(--muted); }
+.op-exp-row:hover, .op-exp-row:focus-visible { background: var(--panel-2); outline: none; }
+.op-exp-row.op-monthly span { font-weight: 700; color: var(--text-strong); }
+.op-exp-row.op-daily span { color: var(--muted); }
+.op-exp-row.on { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.op-exp-row.on span { color: var(--accent-text); font-weight: 700; }
+/* The key under the list: "M Monthly · W Weekly", always in view. */
+.op-exp-key {
+  position: sticky; bottom: -6px; z-index: 2; display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px -6px -6px; padding: 7px 16px 8px;
+  border-top: 1px solid var(--border); background: var(--panel); font-size: 11px; color: var(--muted);
+}
+.op-exp-key span { display: inline-flex; align-items: center; gap: 5px; }
 .op-count { font-size: 11.5px; }
 .op-src { font-size: 11.5px; white-space: nowrap; margin-right: 6px; }
 .op-src.op-live { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; color: var(--accent-text); }

@@ -48,6 +48,8 @@ function sourceOf(r) {
   if (src === 'BINANCE') return { key: 'binance', label: 'Binance' };
   if (src === 'BINANCEF') return { key: 'binance', label: 'Binance Futures' };
   if (src === 'COINBASE') return { key: 'coinbase', label: 'Coinbase' };
+  if (src === 'BYBIT' || src === 'BYBITF') return { key: 'bybit', label: src === 'BYBIT' ? 'Bybit' : 'Bybit Futures' };
+  if (src === 'OKX' || src === 'OKXF') return { key: 'okx', label: src === 'OKX' ? 'OKX' : 'OKX Futures' };
   return isServerMode() ? { key: 'yahoo', label: 'Yahoo' } : { key: 'twelvedata', label: 'Twelve Data' };
 }
 
@@ -150,7 +152,7 @@ export class SymbolSearch {
     rows.forEach((r, i) => {
       const src = sourceOf(r);
       // Crypto rows: the exchange is the source. Others: the exchange, then where the data comes from.
-      const exch = src.key === 'binance' || src.key === 'coinbase' ? '' : shortExchange(r.exchange);
+      const exch = ['binance', 'coinbase', 'bybit', 'okx'].includes(src.key) ? '' : shortExchange(r.exchange);
       html += `<div class="sr-row" data-i="${i}">
           <span class="sr-ticker">${esc(r.ticker)}</span>
           <span class="sr-name">${esc(r.name)}</span>

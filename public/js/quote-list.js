@@ -145,7 +145,7 @@ export class QuoteList {
       const box = el.getBoundingClientRect();
       if (e.clientY < box.top + 28) el.scrollTop -= 14;
       else if (e.clientY > box.bottom - 28) el.scrollTop += 14;
-      drag.to = this.dropIndex(e.clientY);
+      drag.to = this.dropIndex(e.clientY, drag.row.classList.contains('wl-sec'));
       this.showDrop(drag.to);
     });
     const end = (e) => {
@@ -164,13 +164,18 @@ export class QuoteList {
     el.addEventListener('pointercancel', end);
   }
 
-  /** Where a drop at height y goes: the index of the visible row below the pointer's half-way mark. */
-  dropIndex(y) {
+  /**
+   * Where a drop at height y goes: the index of the visible row below the pointer's half-way mark.
+   * A section only lands between sections (or at the end), so the line shows where it really goes.
+   */
+  dropIndex(y, section = false) {
+    let to = this.items.length;
     for (const row of this.el.querySelectorAll('.wl-row:not([hidden]), .wl-sec')) {
       const r = row.getBoundingClientRect();
-      if (y < r.top + r.height / 2) return Number(row.dataset.i);
+      if (y < r.top + r.height / 2) { to = Number(row.dataset.i); break; }
     }
-    return this.items.length;
+    if (section) while (to < this.items.length && this.items[to].section == null) to++;
+    return to;
   }
 
   showDrop(to) {
@@ -184,7 +189,8 @@ export class QuoteList {
     const below = rows.find((r) => Number(r.dataset.i) >= to);
     const last = rows[rows.length - 1];
     this.dropLine.hidden = false;
-    this.dropLine.style.top = `${below ? below.offsetTop - 1 : last ? last.offsetTop + last.offsetHeight - 1 : 0}px`;
+    const y = below ? below.offsetTop - 1 : last ? last.offsetTop + last.offsetHeight - 2 : 0;
+    this.dropLine.style.top = `${Math.max(0, y)}px`; // at the very top, keep it inside the list
   }
 
   refreshStars() {
