@@ -1,17 +1,26 @@
 {
   "schema": 2,
   "createdAt": 1795780800000,
-  "session": "eAx0fxY_ssPDliFMnCTLXRO6AVvgpxYIuN45-h8uvEE",
-  "token": "wl_QW8BM_R4zfak_uLU3hEHmrcxhXjSsRO-8wotIri4q2Q",
-  "epoch": "5136669995a9e2dd",
+  "session": "qUS8NDNaf0H2BmYGr4QCpBsAhbdXWXrALH2xs0zJHUQ",
+  "token": "wl_4joqoHrpTyxrAgHZSPaj2e2L1vXheKGMK5319_NE-C8",
+  "cursor": 8,
+  "epoch": "165dc3f7e597b27f",
+  "prunedRev": 6,
+  "changesAfterCursor": [
+    [
+      "lang",
+      1,
+      9
+    ],
+    [
+      "theme",
+      2,
+      10
+    ]
+  ],
   "keys": {
     "watchlist": {
       "v": "[\"YAHOO:AAPL\",\"BINANCE:BTCUSDT\"]",
-      "ver": 1,
-      "deleted": false
-    },
-    "theme": {
-      "v": "\"dark\"",
       "ver": 1,
       "deleted": false
     },
@@ -20,10 +29,143 @@
       "ver": 2,
       "deleted": false
     },
-    "drawings.YAHOO:AAPL": {
+    "drawings.YAHOO:MSFT": {
       "v": null,
       "ver": 2,
       "deleted": true
+    },
+    "lang": {
+      "v": "\"en\"",
+      "ver": 1,
+      "deleted": false
+    },
+    "theme": {
+      "v": "\"light\"",
+      "ver": 2,
+      "deleted": false
     }
+  },
+  "tables": {
+    "api_tokens": [
+      {
+        "id": "3632d231d4a4",
+        "hash": "1af3f8c01bedbdca3b3c6e268210a2ffb1e9b9094762fc79f532fbd965b879c2",
+        "label": "fixture",
+        "created_at": 1795780800000,
+        "last_used_at": null
+      }
+    ],
+    "audit_log": [
+      {
+        "id": 1,
+        "at": 1795780800000,
+        "event": "login.ok",
+        "ip": "192.0.2.10",
+        "detail": ""
+      },
+      {
+        "id": 2,
+        "at": 1795780800000,
+        "event": "login.fail",
+        "ip": "192.0.2.11",
+        "detail": "{\"reason\":\"password\"}"
+      }
+    ],
+    "kv_history": [
+      {
+        "key": "alerts",
+        "version": 1,
+        "value": "[{\"id\":\"a1\",\"symbol\":\"BINANCE:BTCUSDT\",\"condition\":\"up\",\"price\":100000,\"message\":\"fixture\",\"active\":true,\"created\":1795780800000},{\"id\":\"a2\",\"symbol\":\"BINANCE:BTCUSDT\",\"condition\":\"up\",\"price\":100000,\"message\":\"fixture\",\"active\":true,\"created\":1795780800000}]",
+        "size": 259,
+        "created_at": 1795780800000
+      },
+      {
+        "key": "alerts",
+        "version": 2,
+        "value": "[{\"id\":\"a1\",\"symbol\":\"BINANCE:BTCUSDT\",\"condition\":\"up\",\"price\":100000,\"message\":\"fixture\",\"active\":false,\"created\":1795780800000,\"triggeredAt\":1795780800000,\"triggerPrice\":100010}]",
+        "size": 181,
+        "created_at": 1795780800000
+      }
+    ],
+    "kv_state": [
+      {
+        "key": "watchlist",
+        "value": "[\"YAHOO:AAPL\",\"BINANCE:BTCUSDT\"]",
+        "size": 32,
+        "deleted": 0,
+        "version": 1,
+        "rev": 1,
+        "updated_at": 1795780800000,
+        "updated_by": "fixture"
+      },
+      {
+        "key": "theme",
+        "value": "\"light\"",
+        "size": 7,
+        "deleted": 0,
+        "version": 2,
+        "rev": 10,
+        "updated_at": 1795780800000,
+        "updated_by": "fixture"
+      },
+      {
+        "key": "alerts",
+        "value": "[{\"id\":\"a1\",\"symbol\":\"BINANCE:BTCUSDT\",\"condition\":\"up\",\"price\":100000,\"message\":\"fixture\",\"active\":false,\"created\":1795780800000,\"triggeredAt\":1795780800000,\"triggerPrice\":100010}]",
+        "size": 181,
+        "deleted": 0,
+        "version": 2,
+        "rev": 4,
+        "updated_at": 1795780800000,
+        "updated_by": "fixture"
+      },
+      {
+        "key": "drawings.YAHOO:MSFT",
+        "value": null,
+        "size": 0,
+        "deleted": 1,
+        "version": 2,
+        "rev": 8,
+        "updated_at": 1795780800000,
+        "updated_by": "fixture"
+      },
+      {
+        "key": "lang",
+        "value": "\"en\"",
+        "size": 4,
+        "deleted": 0,
+        "version": 1,
+        "rev": 9,
+        "updated_at": 1795780800000,
+        "updated_by": "fixture"
+      }
+    ],
+    "meta": [
+      {
+        "key": "epoch",
+        "value": "165dc3f7e597b27f"
+      },
+      {
+        "key": "state_rev",
+        "value": "10"
+      },
+      {
+        "key": "pruned_rev",
+        "value": "6"
+      },
+      {
+        "key": "totp_last_counter",
+        "value": "59000123"
+      }
+    ],
+    "sessions": [
+      {
+        "id": "673507a1d6ab14e2ee1c16ee0371d6d43de420d5f90f65b2f60a761913156544",
+        "created_at": 1795780800000,
+        "last_seen_at": 1795780800000,
+        "expires_at": 1798372800000,
+        "user_agent": "fixture",
+        "ip": ""
+      }
+    ]
   }
 }

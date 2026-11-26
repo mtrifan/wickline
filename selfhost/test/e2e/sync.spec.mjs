@@ -196,7 +196,7 @@ test('a lapsed login sends the page to the sign-in form', async ({ browser }) =>
   await a.ctx.close();
 });
 
-test('without Web Locks (plain-http LAN), a localStorage lease elects one leader and hands over', async ({ browser }) => {
+test('without Web Locks (plain-http LAN), a localStorage lease elects one leader and hands over', async ({ browser, browserName }) => {
   const ctx = await browser.newContext();
   await hermetic(ctx);
   await ctx.addInitScript(() => { Object.defineProperty(navigator, 'locks', { value: undefined, configurable: true }); });
@@ -211,10 +211,11 @@ test('without Web Locks (plain-http LAN), a localStorage lease elects one leader
   await expect.poll(() => second.evaluate(() => typeof window.wicklineSelfhost)).toBe('object');
   await second.waitForTimeout(3500); // a few lease ticks
   expect([(await sync(first)).leader, (await sync(second)).leader]).toEqual([true, false]);
-  // pagehide releases the lease at once. Firefox does not run unload handlers when Playwright
-  // closes a page, so there the lease expires instead (15 s): both are a handover.
+  // pagehide releases the lease at once, so the handover is prompt (well under the 15 s lease).
+  // Firefox does not run unload handlers when Playwright closes a page: there the lease expires
+  // instead, which still hands over.
   await first.close();
-  await waitLeader(second, { timeout: 25_000 });
+  await waitLeader(second, { timeout: browserName === 'firefox' ? 25_000 : 8_000 });
   await ctx.close();
 });
 

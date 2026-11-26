@@ -1,6 +1,49 @@
 {
   "schema": 1,
   "createdAt": 1795780800000,
-  "session": "iTfylQME4qhqDnc5dDBxLZBMnQPTXfff709H8dQCTYg",
-  "token": "wl_YWLvd1Fi9pltMPLaHCkJZ7ZTLUj2hmN3n-SAIox8RnM"
+  "session": "mVoajRoR6TDEO5fC76FoFDVdiDw4FX0GRRTPxScYiZw",
+  "token": "wl_TklWurNYmFKG-wrl_cU3nmm8NK1_74H46vt_5xIF8Wg",
+  "tables": {
+    "api_tokens": [
+      {
+        "id": "3db8f3bf3c63",
+        "hash": "760f7e1f100d121acc247c7207903ebe6e0aff20eb68f338d93e757f66bb311a",
+        "label": "fixture",
+        "created_at": 1795780800000,
+        "last_used_at": null
+      }
+    ],
+    "audit_log": [
+      {
+        "id": 1,
+        "at": 1795780800000,
+        "event": "login.ok",
+        "ip": "192.0.2.10",
+        "detail": ""
+      },
+      {
+        "id": 2,
+        "at": 1795780800000,
+        "event": "login.fail",
+        "ip": "192.0.2.11",
+        "detail": "{\"reason\":\"password\"}"
+      }
+    ],
+    "meta": [
+      {
+        "key": "totp_last_counter",
+        "value": "59000123"
+      }
+    ],
+    "sessions": [
+      {
+        "id": "7f3f16d5143598a39d6d6dfe8d1f14112fe902dac7329a11694136ae03e96a00",
+        "created_at": 1795780800000,
+        "last_seen_at": 1795780800000,
+        "expires_at": 1798372800000,
+        "user_agent": "fixture",
+        "ip": ""
+      }
+    ]
+  }
 }
