@@ -3,7 +3,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { keepOpen } from '../../alerts/sources/socket.mjs';
-import { createBinanceSource, createCoinbaseSource, createCryptoRest, RateLimited } from '../../alerts/sources/crypto.mjs';
+import { createBinanceSource, createCoinbaseSource, createBybitSource, createOkxSource, createCryptoRest, RateLimited } from '../../alerts/sources/crypto.mjs';
 import { createFeeds, route, chartOpen } from '../../alerts/feeds.mjs';
 import { assignShards } from '../../alerts/sources/shards.mjs';
 import { normalizeSymbol } from '../../alerts/evaluate.mjs';
@@ -372,4 +372,77 @@ test('the supervisor forwards stale notices to the ledger only with NOTIFY_STALE
     await sup.stop();
     assert.deepEqual(notices, notifyStale ? [['YAHOO:AAPL', 5]] : []);
   }
+});
+
+test('Bybit: tickers topics 10 per subscribe, a ping, and only updates that carry a price', async () => {
+  const { sockets, openWs } = fakeWs();
+  const ticks = [];
+  const src = createBybitSource({ market: 'BYBITF', openWs, onTick: (t) => ticks.push(t) });
+  cleanup.push(() => src.close());
+  const tickers = Array.from({ length: 12 }, (_, i) => `C${String(i).padStart(2, '0')}USDT`);
+  src.setSymbols(tickers);
+  assert.equal(sockets[0].url, 'wss://stream.bybit.com/v5/public/linear');
+  sockets[0].open();
+  assert.deepEqual(sockets[0].sent.map((m) => m.args.length), [10, 2]);
+  assert.equal(sockets[0].sent[0].op, 'subscribe');
+  assert.equal(sockets[0].sent[0].args[0], 'tickers.C00USDT');
+  sockets[0].message({ topic: 'tickers.C00USDT', data: { symbol: 'C00USDT', lastPrice: '61000.5' } });
+  sockets[0].message({ topic: 'tickers.C00USDT', data: { symbol: 'C00USDT', fundingRate: '0.0001' } }); // a perpetual delta: no price
+  assert.deepEqual(ticks.map((t) => [t.symbol, t.price]), [['BYBITF:C00USDT', 61000.5]]);
+  const spot = createBybitSource({ market: 'BYBIT', openWs, onTick() {} });
+  cleanup.push(() => spot.close());
+  spot.setSymbols(['BTCUSDT']);
+  assert.equal(sockets.at(-1).url, 'wss://stream.bybit.com/v5/public/spot');
+});
+
+test('OKX: tickers channel with -SWAP ids for perpetuals; "pong" and errors are not prices', () => {
+  const { sockets, openWs } = fakeWs();
+  const ticks = [];
+  const src = createOkxSource({ market: 'OKXF', openWs, onTick: (t) => ticks.push(t) });
+  cleanup.push(() => src.close());
+  src.setSymbols(['BTC-USDT']);
+  assert.equal(sockets[0].url, 'wss://ws.okx.com:8443/ws/v5/public');
+  sockets[0].open();
+  assert.deepEqual(sockets[0].sent, [{ op: 'subscribe', args: [{ channel: 'tickers', instId: 'BTC-USDT-SWAP' }] }]);
+  sockets[0].onmessage({ data: 'pong' });
+  sockets[0].message({ event: 'error', code: '60018', msg: "Invalid instId" });
+  sockets[0].message({ arg: { channel: 'tickers', instId: 'BTC-USDT-SWAP' }, data: [{ instId: 'BTC-USDT-SWAP', last: '60720.4' }] });
+  assert.deepEqual(ticks.map((t) => [t.symbol, t.price]), [['OKXF:BTC-USDT', 60720.4]]);
+});
+
+test('the kept-open socket sends the exchange ping while connected', async () => {
+  const { sockets, openWs } = fakeWs();
+  const conn = keepOpen({ urls: () => ['wss://a'], openWs, onMessage() {}, ping: { everyMs: 40, message: () => 'ping' } });
+  cleanup.push(() => conn.close());
+  sockets[0].sent = [];
+  sockets[0].send = (m) => sockets[0].sent.push(m);
+  sockets[0].open();
+  await until(() => sockets[0].sent.length >= 2);
+  conn.close();
+  const n = sockets[0].sent.length;
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(sockets[0].sent.length, n, 'no ping after close');
+});
+
+test('crypto REST: Bybit and OKX tickers, an exchange error counts as a failure', async () => {
+  const urls = [];
+  const restApi = createCryptoRest({
+    fetch: async (url) => {
+      urls.push(url);
+      if (url.includes('bybit.com') && url.includes('BAD')) return res(200, { retCode: 10001, retMsg: 'params error' });
+      if (url.includes('bybit')) return res(200, { retCode: 0, result: { list: [{ symbol: 'BTCUSDT', lastPrice: '61000' }] } });
+      return res(200, { code: '0', data: [{ instId: 'BTC-USDT-SWAP', last: '60720.4' }] });
+    },
+  });
+  assert.deepEqual([...await restApi.fetchPrices('BYBITF', ['BTCUSDT'])], [['BTCUSDT', 61000]]);
+  assert.match(urls.at(-1), /^https:\/\/api\.bybit\.com\/v5\/market\/tickers\?category=linear&symbol=BTCUSDT$/);
+  assert.deepEqual([...await restApi.fetchPrices('OKXF', ['BTC-USDT'])], [['BTC-USDT', 60720.4]]);
+  assert.equal(urls.at(-1), 'https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT-SWAP');
+  await assert.rejects(restApi.fetchPrices('BYBIT', ['BAD']), /exchange error/, 'every host refused: an error, not "no price"');
+});
+
+test('Bybit and OKX symbols route to their markets', () => {
+  assert.deepEqual(route('bybitf:btcusdt'), { market: 'BYBITF', ticker: 'BTCUSDT' });
+  assert.deepEqual(route('OKX:BTC-USDT'), { market: 'OKX', ticker: 'BTC-USDT' });
+  assert.equal(normalizeSymbol('okxf:btc-usdt'), 'OKXF:BTC-USDT');
 });

@@ -28,7 +28,7 @@ export function normalizeSymbol(symbol) {
   const market = s.slice(0, i).toUpperCase();
   const ticker = s.slice(i + 1);
   // Exchanges report crypto tickers in upper case.
-  return `${market}:${['BINANCE', 'BINANCEF', 'COINBASE'].includes(market) ? ticker.toUpperCase() : ticker}`;
+  return `${market}:${['BINANCE', 'BINANCEF', 'COINBASE', 'BYBIT', 'BYBITF', 'OKX', 'OKXF'].includes(market) ? ticker.toUpperCase() : ticker}`;
 }
 
 export const REGULAR = 1;

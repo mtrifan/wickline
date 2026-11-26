@@ -15,7 +15,7 @@ import { createEvaluator } from './evaluate.mjs';
 import { createFeeds, route, chartOpen } from './feeds.mjs';
 import { createNet } from './net.mjs';
 import { createYahooSource } from './sources/yahoo.mjs';
-import { createBinanceSource, createCoinbaseSource, createCryptoRest } from './sources/crypto.mjs';
+import { createBinanceSource, createCoinbaseSource, createBybitSource, createOkxSource, createCryptoRest } from './sources/crypto.mjs';
 
 const HEARTBEAT_MS = 5_000;
 const PROGRESS_MS = 5_000;
@@ -71,6 +71,10 @@ const feeds = createFeeds({
     BINANCE: createBinanceSource({ market: 'BINANCE', openWs: net.openWs, log, onTick: (t) => feeds.tick(t) }),
     BINANCEF: createBinanceSource({ market: 'BINANCEF', openWs: net.openWs, log, onTick: (t) => feeds.tick(t) }),
     COINBASE: createCoinbaseSource({ openWs: net.openWs, log, onTick: (t) => feeds.tick(t) }),
+    BYBIT: createBybitSource({ market: 'BYBIT', openWs: net.openWs, log, onTick: (t) => feeds.tick(t) }),
+    BYBITF: createBybitSource({ market: 'BYBITF', openWs: net.openWs, log, onTick: (t) => feeds.tick(t) }),
+    OKX: createOkxSource({ market: 'OKX', openWs: net.openWs, log, onTick: (t) => feeds.tick(t) }),
+    OKXF: createOkxSource({ market: 'OKXF', openWs: net.openWs, log, onTick: (t) => feeds.tick(t) }),
   },
   rest,
   onPrice,

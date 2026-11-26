@@ -18,8 +18,8 @@ const OPEN_RECHECK_MS = 5 * 60_000; // how long an "open" market answer is trust
 const PROBES_PER_STEP = 2; // market checks started per step, so a restart does not burst requests
 const YAHOO_BATCH = 200; // upstream's /api/yahoo/quotes takes at most 200 symbols
 
-export const MARKETS = ['YAHOO', 'BINANCE', 'BINANCEF', 'COINBASE'];
-const CRYPTO = new Set(['BINANCE', 'BINANCEF', 'COINBASE']);
+export const MARKETS = ['YAHOO', 'BINANCE', 'BINANCEF', 'COINBASE', 'BYBIT', 'BYBITF', 'OKX', 'OKXF'];
+const CRYPTO = new Set(['BINANCE', 'BINANCEF', 'COINBASE', 'BYBIT', 'BYBITF', 'OKX', 'OKXF']);
 
 /**
  * "YAHOO:AAPL" -> { market: 'YAHOO', ticker: 'AAPL' }; null for a provider no source serves.

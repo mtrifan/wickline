@@ -9,9 +9,11 @@ const MAX_BACKOFF_MS = 30_000;
  * keepOpen({ urls, openWs, onOpen(ws), onMessage(data), onState(), silenceMs, log, name })
  *   urls      () => [url, ...] tried in turn (a function, so the subscription can change)
  *   openWs    (url) => a WebSocket (injected: the worker's routes it through WICKLINE_PROXY)
+ *   ping      { everyMs, message: () => string }: an application-level ping some exchanges need
+ *             (Bybit, OKX); its replies also keep the silence watchdog quiet
  * Returns { close(), get connected() }.
  */
-export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState = () => {}, silenceMs = 180_000, log, name = 'stream' }) {
+export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState = () => {}, silenceMs = 180_000, ping = null, log, name = 'stream' }) {
   let ws = null;
   let host = 0;
   let retry = 0;
@@ -19,6 +21,7 @@ export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState =
   let connected = false;
   let timer = null;
   let watchdog = null;
+  let pinger = null;
   let lastMessage = 0;
   let openedAt = 0;
 
@@ -38,6 +41,11 @@ export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState =
       lastMessage = Date.now();
       setConnected(true);
       try { onOpen(sock); } catch (e) { log?.error?.(`${name} subscribe failed`, { error: e?.message }); }
+      if (ping) {
+        clearInterval(pinger);
+        pinger = setInterval(() => { try { sock.send(ping.message()); } catch { /* closing */ } }, ping.everyMs);
+        pinger.unref?.();
+      }
     };
     sock.onmessage = (ev) => {
       if (ws !== sock) return;
@@ -49,6 +57,7 @@ export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState =
     sock.onclose = () => {
       if (ws !== sock) return;
       ws = null;
+      clearInterval(pinger);
       setConnected(false);
       host++; // the next attempt tries the next host
       scheduleReconnect();
@@ -79,6 +88,7 @@ export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState =
       closed = true;
       clearTimeout(timer);
       clearInterval(watchdog);
+      clearInterval(pinger);
       const s = ws;
       ws = null;
       setConnected(false);

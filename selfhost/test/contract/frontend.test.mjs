@@ -98,3 +98,23 @@ test('the alert worker\'s crypto sources use upstream\'s hosts, endpoints and me
   assert.match(src, /\$\{cfg\.ticker24\}\?type=MINI&symbols=/, `${point('crypto-feeds')} spot batch ticker`);
   assert.match(src, /\/products\/\$\{t\}\/stats/, `${point('crypto-feeds')} Coinbase stats (last price)`);
 });
+
+test('the alert worker\'s Bybit and OKX sources use upstream\'s hosts, channels and fields', async () => {
+  const src = readUpstream('public/js/crypto-exchanges.js');
+  const c = await import('../../alerts/sources/crypto.mjs');
+  const list = (a) => `[${a.map((h) => `'${h}'`).join(', ')}]`;
+  assert.ok(src.includes(`const BYBIT_REST = ${list(c.BYBIT_REST)}`), `${point('crypto-feeds')} Bybit REST hosts`);
+  assert.ok(src.includes(`const BYBIT_WS = ${list(c.BYBIT_WS)}`), `${point('crypto-feeds')} Bybit WS hosts`);
+  assert.ok(src.includes(`const OKX_REST = ${list(c.OKX_REST)}`), `${point('crypto-feeds')} OKX REST hosts`);
+  assert.ok(src.includes(`const OKX_WS = ${list(c.OKX_WS)}`), `${point('crypto-feeds')} OKX WS hosts`);
+  assert.match(src, /const bybitCat = \(src\) => \(src === 'BYBITF' \? 'linear' : 'spot'\)/, `${point('crypto-feeds')} Bybit categories`);
+  assert.match(src, /\/v5\/public\/\$\{bybitCat\(src\)\}/, `${point('crypto-feeds')} Bybit stream path`);
+  assert.match(src, /tickerTopic: \(src, ticker\) => `tickers\.\$\{ticker\}`/, `${point('crypto-feeds')} Bybit tickers topic`);
+  assert.match(src, /d\.lastPrice != null \? \+d\.lastPrice/, `${point('crypto-feeds')} Bybit lastPrice (absent on partial updates)`);
+  assert.match(src, /ping: \(\) => JSON\.stringify\(\{ op: 'ping' \}\)/, `${point('crypto-feeds')} Bybit ping`);
+  assert.match(src, /const okxId = \(src, ticker\) => \(src === 'OKXF' \? `\$\{ticker\}-SWAP` : ticker\)/, `${point('crypto-feeds')} OKX perpetual ids`);
+  assert.match(src, /tickerTopic: \(src, ticker\) => \(\{ channel: 'tickers', instId: okxId\(src, ticker\) \}\)/, `${point('crypto-feeds')} OKX tickers channel`);
+  assert.match(src, /ticker: d\.instId\.replace\(\/-SWAP\$\/, ''\), last: \+d\.last/, `${point('crypto-feeds')} OKX last price`);
+  assert.match(src, /ping: \(\) => 'ping'/, `${point('crypto-feeds')} OKX ping`);
+  assert.deepEqual(Object.keys((await importUpstream('public/js/crypto-exchanges.js')).EXCHANGE_SOURCES), ['BYBIT', 'BYBITF', 'OKX', 'OKXF'], `${point('crypto-feeds')} exchange markets`);
+});
