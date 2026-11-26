@@ -38,8 +38,8 @@ const OKX_WS_HOSTS = ['wss://ws.okx.com/ws/v5/public', ...OKX_WS];
 export const bybitCategory = (market) => (market === 'BYBITF' ? 'linear' : 'spot');
 export const okxId = (market, ticker) => (market === 'OKXF' ? `${ticker}-SWAP` : ticker);
 const EXCHANGE_PING_MS = 20_000; // both drop a connection that sends nothing for 30 s
-// Pongs keep a connection "alive" even if its subscription stalled: with no price at all for this
-// long, it is reopened (and resubscribed). Long enough for quiet pairs not to churn.
+// Pongs keep a connection "alive" even if its subscription stalled: with no ticker update at all for
+// this long (a delta without a new price still counts), it is reopened and resubscribed.
 const PRICE_SILENCE_MS = 5 * 60_000;
 
 /**
@@ -142,9 +142,8 @@ export function createBybitSource({ market, openWs, onTick, onState = () => {}, 
       // Perpetual updates carry only the fields that changed: no lastPrice means no new price.
       const price = toPrice(m.data.lastPrice);
       const ticker = m.data.symbol || m.topic.slice(8);
-      if (!Number.isFinite(price)) return false;
-      onTick({ symbol: `${market}:${ticker}`, price, session: 1, at: Date.now() });
-      return true;
+      if (Number.isFinite(price)) onTick({ symbol: `${market}:${ticker}`, price, session: 1, at: Date.now() });
+      return true; // subscription data, even without a new price
     },
   }), perConn, onState);
 }
@@ -166,14 +165,12 @@ export function createOkxSource({ market, openWs, onTick, onState = () => {}, lo
       const m = JSON.parse(text);
       if (m.event === 'error') { log?.warn?.('OKX refused the subscription', { code: m.code, message: m.msg }); return false; }
       if (m.arg?.channel !== 'tickers' || !Array.isArray(m.data)) return false;
-      let any = false;
       for (const d of m.data) {
         const price = toPrice(d.last);
         if (typeof d.instId !== 'string' || !Number.isFinite(price)) continue;
         onTick({ symbol: `${market}:${d.instId.replace(/-SWAP$/, '')}`, price, session: 1, at: Date.now() });
-        any = true;
       }
-      return any;
+      return true; // subscription data
     },
   }), perConn, onState);
 }

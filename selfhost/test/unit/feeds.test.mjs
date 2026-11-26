@@ -487,3 +487,18 @@ test('a connection kept alive only by pongs is reopened when no price arrives', 
   await until(() => sockets[0].closed, 3000);
   clearInterval(pongs);
 });
+
+test('ticker deltas without a new price keep a subscription healthy; a pong-only one is reopened', async () => {
+  const { sockets, openWs } = fakeWs();
+  let deltas = true;
+  const conn = keepOpen({ urls: () => ['wss://a'], openWs, onMessage: (t) => t === 'delta', silenceMs: 1_000, priceSilenceMs: 300 });
+  cleanup.push(() => conn.close());
+  sockets[0].open();
+  const feed = setInterval(() => { sockets.at(-1).onmessage?.({ data: deltas ? 'delta' : 'pong' }); }, 30);
+  cleanup.push(() => clearInterval(feed));
+  await new Promise((r) => setTimeout(r, 1_500)); // a watchdog check has passed
+  assert.equal(sockets[0].closed, false, 'healthy deltas: no reconnect');
+  deltas = false; // only pongs from now: a stalled subscription
+  await until(() => sockets[0].closed, 4_000);
+  clearInterval(feed);
+});
