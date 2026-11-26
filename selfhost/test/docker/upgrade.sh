@@ -60,6 +60,8 @@ login() {
 }
 schema() { docker run --rm -v "$VOL:/data" "$IMAGE" node -e "const { DatabaseSync } = require('node:sqlite'); console.log(new DatabaseSync('/data/wickline.db', { readOnly: true }).prepare('PRAGMA user_version').get().user_version)" 2>/dev/null; }
 state() { curl -fsS -b "$JAR" "$BASE/api/selfhost/state"; }
+epoch_of() { sed -E 's/.*"epoch":"([0-9a-f]+)".*/\1/'; }
+has_table() { docker run --rm -v "$VOL:/data" "$IMAGE" node -e "const { DatabaseSync } = require('node:sqlite'); console.log(new DatabaseSync('/data/wickline.db', { readOnly: true }).prepare(\"SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = '$1'\").get().n)" 2>/dev/null; }
 
 echo "== release N (schema $known) stores data"
 start "$IMAGE"
@@ -80,12 +82,23 @@ grep -q "database migration applied" <<<"$logs" || fail "no migration logged"
 grep -q '"theme":{"v":"\\"dark\\""' <<<"$(curl -fsS -H "Authorization: Bearer $token" "$BASE/api/selfhost/state")" || fail "synced value lost in the upgrade"
 backup="$(docker exec "$NAME" sh -c "ls -1 /data/backups/pre-migrate-${known}-to-${next}-*.db" | head -n 1)"
 [ -n "$backup" ] || fail "no pre-migration backup"
+# A change after the upgrade: the rollback must bring back the value from before it.
+upgraded="$(curl -fsS -H "Authorization: Bearer $token" "$BASE/api/selfhost/state")"
+up_epoch="$(epoch_of <<<"$upgraded")"
+code="$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" -X PUT -H 'X-Wickline-Selfhost: 1' -H 'Content-Type: application/json' \
+  --data "{\"value\":\"\\\"light\\\"\",\"baseVersion\":1,\"epoch\":\"$up_epoch\"}" "$BASE/api/selfhost/state/theme")"
+[ "$code" = 200 ] || fail "write after the upgrade returned $code"
+grep -q '"theme":{"v":"\\"light\\""' <<<"$(curl -fsS -H "Authorization: Bearer $token" "$BASE/api/selfhost/state")" || fail "the write after the upgrade did not take"
 stop
+[ "$(has_table upgrade_probe)" = 1 ] || fail "the test migration's table is missing after the upgrade"
 [ "$(schema)" = "$next" ] || fail "schema is not $next after the upgrade"
 echo "ok: data kept, API token works, $backup written"
 
 echo "== rolling back to release N"
-docker run --name "$NAME" -v "$VOL:/data" -e WICKLINE_PASSWORD="$PASSWORD" "$IMAGE" >/dev/null 2>&1 && fail "release N started on a newer database"
+# Detached with a deadline: a release that wrongly accepted the newer database would keep running.
+docker run -d --name "$NAME" -v "$VOL:/data" -e WICKLINE_PASSWORD="$PASSWORD" "$IMAGE" >/dev/null
+for _ in $(seq 1 30); do [ "$(docker inspect -f '{{.State.Running}}' "$NAME")" = false ] && break; sleep 1; done
+[ "$(docker inspect -f '{{.State.Running}}' "$NAME")" = false ] || fail "release N started on a newer database"
 code="$(docker inspect -f '{{.State.ExitCode}}' "$NAME")"
 grep -q "Roll back" <<<"$(docker logs "$NAME" 2>&1)" || fail "the refusal does not point to the rollback steps"
 docker rm "$NAME" >/dev/null
@@ -93,8 +106,11 @@ docker rm "$NAME" >/dev/null
 echo "ok: refused with exit code 78 and a pointer to the rollback steps"
 out="$(docker run --rm -v "$VOL:/data" "$IMAGE" node selfhost/cli.mjs restore "$backup")" || fail "restore failed: $out"
 start "$IMAGE"
-grep -q '"theme":{"v":"\\"dark\\""' <<<"$(curl -fsS -H "Authorization: Bearer $token" "$BASE/api/selfhost/state")" || fail "synced value lost in the rollback"
+restored="$(curl -fsS -H "Authorization: Bearer $token" "$BASE/api/selfhost/state")"
+grep -q '"theme":{"v":"\\"dark\\""' <<<"$restored" || fail "the rollback did not bring back the value from before the upgrade"
+[ "$(epoch_of <<<"$restored")" != "$up_epoch" ] || fail "the rollback kept the epoch, so open browsers would not reload"
 stop
 [ "$(schema)" = "$known" ] || fail "schema is not $known after the rollback"
-echo "ok: release N runs again on schema $known with the data and API token intact"
+[ "$(has_table upgrade_probe)" = 0 ] || fail "the upgraded database is still in place after the rollback"
+echo "ok: release N runs again on schema $known with the pre-upgrade data, a new epoch and the API token"
 echo PASS
