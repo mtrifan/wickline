@@ -367,9 +367,10 @@ This replaces ADR-006 v1, which imported upstream `QuoteStream` under a shim (§
 
 #### 2.5.5 Market hours, polling and staleness
 
-**Open or closed (Yahoo):**
-- Taken from `/api/yahoo/chart` `meta.currentTradingPeriod`, fetched through the loopback and cached per symbol until the period ends.
-- Tick recency is a secondary signal.
+**Open or closed (Yahoo):** *(as implemented in Phase 3d)*
+- Upstream's `/api/yahoo/chart` does not pass `currentTradingPeriod` through, so a market counts as open while the symbol's 1-minute chart (`tf=1m&live=1`, fetched over the loopback) has a bar from the last 15 minutes. This covers holidays and half days.
+- A streamed tick marks the market open at once. The chart is checked only when a symbol has gone quiet: an "open" answer is trusted for 5 minutes, a "closed" one for `ALERT_CLOSED_POLL_INTERVAL`. Never-checked symbols are checked first, at most 2 at a time.
+- A failed check counts as open, so the fallback runs and an outage shows up as stale.
 - Crypto is always open.
 
 **Polling:**

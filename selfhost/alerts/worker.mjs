@@ -12,7 +12,7 @@
 
 import { parentPort, workerData } from 'node:worker_threads';
 import { createEvaluator } from './evaluate.mjs';
-import { createFeeds, route } from './feeds.mjs';
+import { createFeeds, route, chartOpen } from './feeds.mjs';
 import { createNet } from './net.mjs';
 import { createYahooSource } from './sources/yahoo.mjs';
 import { createBinanceSource, createCoinbaseSource, createCryptoRest } from './sources/crypto.mjs';
@@ -52,11 +52,7 @@ const rest = {
   },
   /** Open when the 1-minute chart has a bar from the last 15 minutes (holidays and half days included). */
   async marketOpen(ticker) {
-    const c = await loopbackJson(`/api/yahoo/chart?symbol=${encodeURIComponent(ticker)}&tf=1m&live=1&prepost=${extendedHours ? 1 : 0}`);
-    const last = c?.bars?.at?.(-1);
-    if (!last || !Number.isFinite(last.time)) return false;
-    const nowChart = Date.now() / 1000 + (Number(c.meta?.tzOffset) || 0); // bar times are exchange-local
-    return nowChart - last.time < 15 * 60;
+    return chartOpen(await loopbackJson(`/api/yahoo/chart?symbol=${encodeURIComponent(ticker)}&tf=1m&live=1&prepost=${extendedHours ? 1 : 0}`));
   },
 };
 

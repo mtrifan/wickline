@@ -24,7 +24,11 @@ export function crosses(alert, prev, price) {
 export function normalizeSymbol(symbol) {
   const s = String(symbol ?? '');
   const i = s.indexOf(':');
-  return i < 0 ? `YAHOO:${s}` : `${s.slice(0, i).toUpperCase()}:${s.slice(i + 1)}`;
+  if (i < 0) return `YAHOO:${s}`;
+  const market = s.slice(0, i).toUpperCase();
+  const ticker = s.slice(i + 1);
+  // Exchanges report crypto tickers in upper case.
+  return `${market}:${['BINANCE', 'BINANCEF', 'COINBASE'].includes(market) ? ticker.toUpperCase() : ticker}`;
 }
 
 export const REGULAR = 1;

@@ -121,11 +121,14 @@ export function createAlertLedger(db, { outbox, publicUrl = null, now = Date.now
     return fired ? { fired: true, key: fired } : { fired: false };
   }
 
-  /** One notification per stale episode of a symbol (NOTIFY_STALE). */
+  /**
+   * One notification per stale episode of a symbol (NOTIFY_STALE). Keyed by the hour the episode
+   * started, so a restarting worker that sees the same outage again does not repeat it.
+   */
   function staleNotice(symbol, since) {
     const s = String(symbol);
     const ticker = s.slice(s.indexOf(':') + 1) || s;
-    outbox?.enqueue(`stale:${s}:${since}`, {
+    outbox?.enqueue(`stale:${s}:${Math.floor(since / 3_600_000)}`, {
       title: `No prices for ${ticker}`,
       message: `Wickline has received no prices for ${s} for a while although its market is open. Alerts on it cannot fire until prices return.`,
       ...(publicUrl ? { url: `${publicUrl}/#s=${encodeURIComponent(s)}` } : {}),

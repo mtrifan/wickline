@@ -153,8 +153,8 @@ The server also checks alerts itself, with no browser open, using the same live 
 
 - **live:** prices are streaming.
 - **closed:** the market is closed (no trades in the last 15 minutes: nights, weekends, holidays). Quiet is expected, and nothing is requested until it reopens.
-- **fallback:** the stream went quiet while the market is open, so the price is requested every `ALERT_POLL_INTERVAL` seconds instead and alerts keep working.
-- **stale:** no price at all, from the stream or the fallback. Its alerts cannot fire until prices return; `NOTIFY_STALE=true` sends a notification when this starts.
+- **fallback:** the stream went quiet while the market is open, so the price is requested every `ALERT_POLL_INTERVAL` seconds instead and alerts keep working. For Yahoo symbols the fallback gets the regular-session price, so during pre-market and after-hours a stream outage pauses extended-hours checks until the stream returns.
+- **stale:** the fallback failed too, so there is no price at all. Its alerts cannot fire until prices return; `NOTIFY_STALE=true` sends a notification when this starts (at most one per symbol per hour).
 
 Crypto markets are always open. When Binance answers "too many requests", the fallback waits as long as Binance asks. Connections to Binance and Coinbase go through `WICKLINE_PROXY` when it is set.
 

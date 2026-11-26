@@ -7,22 +7,41 @@
 //             while closed is not staleness; the market is re-checked every closedPollMs
 //   fallback  the stream has been silent past the threshold while the market is open (crypto is
 //             always open): the REST price is polled every pollMs and evaluated like a tick
-//   stale     no price at all (stream or REST) within the threshold while open: reported, and one
-//             stale notice per episode. No alert can fire from it, since there is no new price.
+//   stale     the fallback was tried and failed, and no price at all (stream or REST) arrived within
+//             the threshold while open: reported, and one stale notice per episode. No alert can
+//             fire from it, since there is no new price.
+// The Yahoo fallback is upstream's quote (the regular-session price), so during pre/post-market a
+// stream outage pauses extended-hours checks; regular-session checks continue.
 // Thresholds: staleAfter.crypto (default 5 min), staleAfter.equity (default 10 min).
 
 const OPEN_RECHECK_MS = 5 * 60_000; // how long an "open" market answer is trusted without ticks
 const PROBES_PER_STEP = 2; // market checks started per step, so a restart does not burst requests
+const YAHOO_BATCH = 200; // upstream's /api/yahoo/quotes takes at most 200 symbols
 
 export const MARKETS = ['YAHOO', 'BINANCE', 'BINANCEF', 'COINBASE'];
 const CRYPTO = new Set(['BINANCE', 'BINANCEF', 'COINBASE']);
 
-/** "YAHOO:AAPL" -> { market: 'YAHOO', ticker: 'AAPL' }; null for a provider no source serves. */
+/**
+ * "YAHOO:AAPL" -> { market: 'YAHOO', ticker: 'AAPL' }; null for a provider no source serves.
+ * Exchanges report crypto tickers in upper case, so those are upper-cased to match.
+ */
 export function route(symbol) {
   const i = symbol.indexOf(':');
   const market = i < 0 ? 'YAHOO' : symbol.slice(0, i).toUpperCase();
-  const ticker = i < 0 ? symbol : symbol.slice(i + 1);
+  let ticker = i < 0 ? symbol : symbol.slice(i + 1);
+  if (CRYPTO.has(market)) ticker = ticker.toUpperCase();
   return MARKETS.includes(market) && ticker ? { market, ticker } : null;
+}
+
+/**
+ * Whether a market is open, from upstream's 1-minute chart (/api/yahoo/chart?tf=1m&live=1): open
+ * when its last bar is less than 15 minutes old. Bar times are exchange-local (UTC + tzOffset).
+ */
+export function chartOpen(chart, nowMs = Date.now()) {
+  const last = chart?.bars?.at?.(-1);
+  if (!last || !Number.isFinite(last.time)) return false;
+  const nowChart = nowMs / 1000 + (Number(chart.meta?.tzOffset) || 0);
+  return nowChart - last.time < 15 * 60;
 }
 
 /**
@@ -78,7 +97,8 @@ export function createFeeds({ sources, rest, onPrice, onStale = () => {}, pollMs
     if (t - (st.lastTickAt ?? st.addedAt) < threshold(st)) return st.lastTickAt ? 'live' : 'starting';
     if (st.open === false) return 'closed';
     if (st.open === null) return 'checking';
-    return t - (st.lastPriceAt ?? st.addedAt) < threshold(st) ? 'fallback' : 'stale';
+    // Stale only once the fallback has been tried and failed: not while its first answer is due.
+    return t - (st.lastPriceAt ?? st.addedAt) >= threshold(st) && st.pollError ? 'stale' : 'fallback';
   }
 
   async function probe(st) {
@@ -87,7 +107,9 @@ export function createFeeds({ sources, rest, onPrice, onStale = () => {}, pollMs
     try {
       st.open = !!(await rest.marketOpen(st.ticker));
     } catch (e) {
-      st.open = st.open ?? true; // unknown: assume open, so the fallback still runs
+      // Unknown: assume open, so the fallback runs and an outage shows as stale rather than a
+      // stale "closed" answer silently disabling the symbol's alerts.
+      st.open = true;
       log?.debug?.('market check failed', { symbol: st.key, error: e?.message });
     } finally {
       st.openCheckedAt = now();
@@ -96,8 +118,7 @@ export function createFeeds({ sources, rest, onPrice, onStale = () => {}, pollMs
     }
   }
 
-  async function poll(market, list) {
-    polling.add(market);
+  async function pollBatch(market, list) {
     const t0 = now();
     for (const st of list) st.lastPollAt = t0;
     try {
@@ -108,6 +129,9 @@ export function createFeeds({ sources, rest, onPrice, onStale = () => {}, pollMs
         if (!Number.isFinite(price)) { st.pollError = 'no price'; continue; }
         st.pollError = null;
         if (symbols.get(st.key) !== st) continue; // no longer watched
+        // A streamed price that arrived while the request was out is newer: the REST snapshot
+        // must not be evaluated after it (it would be an older price as the latest one).
+        if (st.lastTickAt != null && st.lastTickAt >= t0) continue;
         st.lastPriceAt = t;
         st.staleSince = null;
         onPrice({ symbol: st.key, price, session: 1, at: t, source: 'poll' });
@@ -116,6 +140,17 @@ export function createFeeds({ sources, rest, onPrice, onStale = () => {}, pollMs
       if (e?.waitMs) backoffUntil[market] = now() + e.waitMs;
       for (const st of list) st.pollError = e?.message || String(e);
       log?.debug?.('price fallback failed', { market, error: e?.message });
+    }
+  }
+
+  async function poll(market, list) {
+    polling.add(market);
+    try {
+      const size = market === 'YAHOO' ? YAHOO_BATCH : list.length;
+      for (let i = 0; i < list.length; i += size) {
+        if (now() < backoffUntil[market]) break;
+        await pollBatch(market, list.slice(i, i + size));
+      }
     } finally {
       polling.delete(market);
     }
@@ -125,11 +160,12 @@ export function createFeeds({ sources, rest, onPrice, onStale = () => {}, pollMs
   function step() {
     const t = now();
     const due = new Map(MARKETS.map((m) => [m, []]));
+    const toProbe = [];
     for (const st of symbols.values()) {
       if (t - (st.lastTickAt ?? st.addedAt) < threshold(st)) continue; // live (or just added)
       if (!st.crypto && !st.probing) {
         const age = t - st.openCheckedAt;
-        if ((st.open === null || age > (st.open ? OPEN_RECHECK_MS : closedPollMs)) && probing < PROBES_PER_STEP) probe(st);
+        if (st.open === null || age > (st.open ? OPEN_RECHECK_MS : closedPollMs)) toProbe.push(st);
       }
       if (st.open !== true) { st.staleSince = null; continue; }
       if (t - st.lastPollAt >= pollMs) due.get(st.market).push(st);
@@ -138,9 +174,12 @@ export function createFeeds({ sources, rest, onPrice, onStale = () => {}, pollMs
         try { onStale(st.key, t); } catch (e) { log?.error?.('stale notice failed', { error: e?.message }); }
       }
     }
+    // Never-checked symbols first, then the oldest answers: with many quiet symbols no one starves.
+    toProbe.sort((a, b) => (b.open === null) - (a.open === null) || a.openCheckedAt - b.openCheckedAt);
+    for (const st of toProbe) { if (probing >= PROBES_PER_STEP) break; probe(st); }
     for (const [market, list] of due) {
       if (!list.length || polling.has(market) || t < backoffUntil[market]) continue;
-      poll(market, market === 'YAHOO' ? list.slice(0, 200) : list);
+      poll(market, list);
     }
   }
 

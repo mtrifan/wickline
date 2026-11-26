@@ -4,6 +4,7 @@
 // them in step (integration point crypto-feeds).
 
 import { keepOpen } from './socket.mjs';
+import { assignShards } from './shards.mjs';
 
 export const BINANCE = {
   BINANCE: {
@@ -35,16 +36,11 @@ function sharded(makeShard, perConn, onState) {
   let shards = [];
   return {
     setSymbols(tickers) {
-      const want = [...new Set(tickers)].sort();
-      const groups = [];
-      for (let i = 0; i < want.length; i += perConn) groups.push(want.slice(i, i + perConn));
-      const keep = new Map(shards.map((s) => [s.key, s]));
-      const next = [];
-      for (const g of groups) {
-        const key = g.join(',');
-        if (keep.has(key)) { next.push(keep.get(key)); keep.delete(key); } else next.push({ key, tickers: g, conn: makeShard(g) });
-      }
-      for (const s of keep.values()) s.conn.close();
+      const groups = assignShards(shards.map((s) => s.tickers), tickers, perConn);
+      const byGroup = new Map(shards.map((s) => [s.tickers, s]));
+      const next = groups.map((g) => byGroup.get(g) ?? { tickers: g, conn: makeShard(g) });
+      const kept = new Set(next);
+      for (const s of shards) if (!kept.has(s)) s.conn.close();
       shards = next;
       onState();
     },
@@ -115,19 +111,32 @@ async function getJson(fetchFn, url) {
  * Latest prices from REST, per market: fetchPrices(market, tickers) -> Map(ticker -> price).
  * Uses the same 24-hour ticker endpoints as upstream; Binance hosts are tried in turn.
  */
-export function createCryptoRest({ fetch: fetchFn }) {
-  async function binance(market, tickers) {
-    const cfg = BINANCE[market];
-    const path = market === 'BINANCE'
-      ? `${cfg.ticker24}?type=MINI&symbols=${encodeURIComponent(JSON.stringify(tickers))}`
-      : tickers.length === 1 ? `${cfg.ticker24}?symbol=${encodeURIComponent(tickers[0])}` : cfg.ticker24;
+/** Runs fn over items, at most `limit` at a time; a RateLimited failure stops the rest and is thrown. */
+async function eachLimited(items, limit, fn) {
+  let i = 0;
+  let limited = null;
+  const run = async () => {
+    while (i < items.length && !limited) {
+      const item = items[i++];
+      try { await fn(item); } catch (e) { if (e instanceof RateLimited) limited = e; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
+  if (limited) throw limited;
+}
+
+export function createCryptoRest({ fetch: fetchFn, concurrency = 4 }) {
+  const hostIndex = { BINANCE: 0, BINANCEF: 0 }; // the host that answered last is tried first
+
+  async function binanceGet(market, path) {
+    const hosts = BINANCE[market].rest;
     let last;
-    for (const host of cfg.rest) {
+    for (let k = 0; k < hosts.length; k++) {
+      const idx = (hostIndex[market] + k) % hosts.length;
       try {
-        const body = await getJson(fetchFn, host + path);
-        const rows = Array.isArray(body) ? body : [body];
-        const want = new Set(tickers);
-        return new Map(rows.filter((r) => want.has(r?.symbol) && Number.isFinite(Number(r.lastPrice))).map((r) => [r.symbol, Number(r.lastPrice)]));
+        const body = await getJson(fetchFn, hosts[idx] + path);
+        hostIndex[market] = idx;
+        return body;
       } catch (e) {
         if (e instanceof RateLimited) throw e;
         last = e;
@@ -135,12 +144,33 @@ export function createCryptoRest({ fetch: fetchFn }) {
     }
     throw last;
   }
+
+  const rowsToMap = (rows, tickers) => {
+    const want = new Set(tickers);
+    return new Map(rows.filter((r) => want.has(r?.symbol) && Number.isFinite(Number(r.lastPrice))).map((r) => [r.symbol, Number(r.lastPrice)]));
+  };
+
+  async function binance(market, tickers) {
+    const cfg = BINANCE[market];
+    if (market === 'BINANCE') {
+      const body = await binanceGet(market, `${cfg.ticker24}?type=MINI&symbols=${encodeURIComponent(JSON.stringify(tickers))}`);
+      return rowsToMap(Array.isArray(body) ? body : [], tickers);
+    }
+    // Futures has no batch by symbol list: one light request per symbol, like upstream.
+    const out = new Map();
+    await eachLimited(tickers, concurrency, async (t) => {
+      const body = await binanceGet(market, `${cfg.ticker24}?symbol=${encodeURIComponent(t)}`);
+      for (const [k, v] of rowsToMap([body], [t])) out.set(k, v);
+    });
+    return out;
+  }
+
   async function coinbase(tickers) {
     const out = new Map();
-    for (const t of tickers) {
+    await eachLimited(tickers, concurrency, async (t) => {
       const s = await getJson(fetchFn, `${COINBASE_REST}/products/${encodeURIComponent(t)}/stats`);
       if (Number.isFinite(Number(s?.last))) out.set(t, Number(s.last));
-    }
+    });
     return out;
   }
   return { fetchPrices: (market, tickers) => (market === 'COINBASE' ? coinbase(tickers) : binance(market, tickers)) };

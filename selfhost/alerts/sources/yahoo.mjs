@@ -7,6 +7,8 @@
 //
 // Ticks: { s: "AAPL", p: price, t: time ms, m: session (0 pre, 1 regular, 2 post, 3 extended) }.
 
+import { assignShards } from './shards.mjs';
+
 export const MAX_PER_STREAM = 100;
 const SILENCE_MS = 60_000;
 const MIN_BACKOFF_MS = 1_000;
@@ -94,19 +96,13 @@ export function createYahooSource({ baseUrl, headers = {}, onTick, onState = () 
 
   function stopShard(s) { s.stopped = true; s.ctrl?.abort(); s.wake?.(); }
 
-  /** Watches exactly these tickers. Unchanged shards keep their connection. */
+  /** Watches exactly these tickers. A ticker keeps its shard, so unchanged shards keep their connection. */
   function setSymbols(tickers) {
-    const want = [...new Set(tickers)].sort();
-    const groups = [];
-    for (let i = 0; i < want.length; i += maxPerStream) groups.push(want.slice(i, i + maxPerStream));
-    const keyOf = (g) => g.join(',');
-    const keep = new Map(shards.map((s) => [keyOf(s.tickers), s]));
-    const next = [];
-    for (const g of groups) {
-      const k = keyOf(g);
-      if (keep.has(k)) { next.push(keep.get(k)); keep.delete(k); } else next.push(startShard(g));
-    }
-    for (const s of keep.values()) stopShard(s);
+    const groups = assignShards(shards.map((s) => s.tickers), tickers, maxPerStream);
+    const byGroup = new Map(shards.map((s) => [s.tickers, s]));
+    const next = groups.map((g) => byGroup.get(g) ?? startShard(g));
+    const kept = new Set(next);
+    for (const s of shards) if (!kept.has(s)) stopShard(s);
     shards = next;
     onState();
   }
