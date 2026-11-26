@@ -111,18 +111,25 @@ async function getJson(fetchFn, url) {
  * Latest prices from REST, per market: fetchPrices(market, tickers) -> Map(ticker -> price).
  * Uses the same 24-hour ticker endpoints as upstream; Binance hosts are tried in turn.
  */
-/** Runs fn over items, at most `limit` at a time; a RateLimited failure stops the rest and is thrown. */
+/**
+ * Runs fn over items, at most `limit` at a time. One failing item is tolerated; a RateLimited
+ * failure stops the rest and is thrown, and so is the last error when every item failed (an outage,
+ * which the caller reports and backs off from, rather than "no price").
+ */
 async function eachLimited(items, limit, fn) {
   let i = 0;
   let limited = null;
+  let failed = 0;
+  let lastError = null;
   const run = async () => {
     while (i < items.length && !limited) {
       const item = items[i++];
-      try { await fn(item); } catch (e) { if (e instanceof RateLimited) limited = e; }
+      try { await fn(item); } catch (e) { if (e instanceof RateLimited) limited = e; else { failed++; lastError = e; } }
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run));
   if (limited) throw limited;
+  if (items.length && failed === items.length) throw lastError;
 }
 
 export function createCryptoRest({ fetch: fetchFn, concurrency = 4 }) {

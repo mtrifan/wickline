@@ -241,6 +241,31 @@ test('Binance: arming one more symbol reconnects one shard, not every later one'
   assert.equal(sockets.filter((w) => w.closed).length, 1, 'one closed');
 });
 
+test('after a failed fallback and a stream recovery, a working fallback sends no stale notice', async () => {
+  let failing = true;
+  const h = harness({ prices: () => { if (failing) throw new Error('down'); return new Map([['BTCUSDT', 64000]]); } });
+  h.feeds.setSymbols(['BINANCE:BTCUSDT']);
+  for (let i = 0; i < 24; i++) await h.advance(30_000); // first outage: stale once
+  assert.equal(h.stale.length, 1);
+  h.feeds.tick({ symbol: 'BINANCE:BTCUSDT', price: 64000, session: 1, at: h.clock.t }); // the stream is back
+  assert.equal(h.feeds.status().symbolStates[0].fallbackError, undefined);
+  failing = false;
+  for (let i = 0; i < 24; i++) await h.advance(30_000); // quiet again, the fallback works
+  assert.equal(h.stale.length, 1, 'no second, false notice');
+});
+
+test('crypto REST: a total futures or Coinbase outage is an error, not "no price"', async () => {
+  const restApi = createCryptoRest({ fetch: async () => { throw new Error('ECONNREFUSED'); } });
+  await assert.rejects(restApi.fetchPrices('BINANCEF', ['BTCUSDT', 'ETHUSDT']), /ECONNREFUSED/);
+  await assert.rejects(restApi.fetchPrices('COINBASE', ['BTC-USD']), /ECONNREFUSED/);
+});
+
+test('Binance futures use the /market/stream path (upstream\'s /stream is silent)', async () => {
+  const { BINANCE } = await import('../../alerts/sources/crypto.mjs');
+  assert.equal(BINANCE.BINANCEF.wsPath, '/market/stream');
+  assert.equal(BINANCE.BINANCE.wsPath, '/stream');
+});
+
 test('a working fallback sends no stale notice when the stream goes quiet', async () => {
   const h = harness({ prices: () => new Map([['BTCUSDT', 64000]]) });
   h.feeds.setSymbols(['BINANCE:BTCUSDT']);

@@ -86,6 +86,7 @@ export function createFeeds({ sources, rest, onPrice, onStale = () => {}, pollMs
     if (st) {
       st.lastTickAt = st.lastPriceAt = t.at;
       st.staleSince = null;
+      st.pollError = null; // "stale" means the current fallback attempt failed, not an old one
       if (!st.crypto) { st.open = true; st.openCheckedAt = t.at; }
     }
     onPrice({ ...t, source: 'stream' });
