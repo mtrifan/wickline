@@ -6,7 +6,7 @@ An unofficial, self-hosted edition of [Wickline](https://github.com/keptaduona/w
 - **sync across devices**: watchlists, layouts, drawings, custom indicators, alerts and preferences, with daily backups;
 - **background price alerts** checked on the server around the clock (Yahoo, Binance, Coinbase), with one Gotify push notification per alert, even with no browser open.
 
-> **Status:** login, sync, backups and server-side alerts are complete and in daily use. Images are published as `ghcr.io/mtrifan/wickline:edge`; versioned images and `:stable` arrive with the first tagged release. The roadmap is in [the plan](selfhost/docs/PLAN.md).
+> **Status:** login, sync, backups and server-side alerts are complete and in daily use. Images are published as `ghcr.io/mtrifan/wickline:edge`; the Unraid template and the examples below use `:edge` until the first tagged release brings versioned images and `:stable`. The roadmap is in [the plan](selfhost/docs/PLAN.md).
 
 ## Install
 
@@ -20,6 +20,7 @@ docker run --rm -it ghcr.io/mtrifan/wickline:edge node selfhost/cli.mjs hash-pas
 
 1. **Add the template.** Unraid's Template field is a list, not a text box, so copy the template onto the flash drive. In the Unraid terminal (`>_`, top right):
    ```sh
+   mkdir -p /boot/config/plugins/dockerMan/templates-user
    wget -O /boot/config/plugins/dockerMan/templates-user/my-wickline.xml \
      https://raw.githubusercontent.com/mtrifan/wickline/selfhosted/selfhost/unraid/wickline.xml
    ```
@@ -28,10 +29,12 @@ docker run --rm -it ghcr.io/mtrifan/wickline:edge node selfhost/cli.mjs hash-pas
    - **Password hash:** the `scrypt$…` output from above.
    - **Data:** `/mnt/user/appdata/wickline`. The default owner `nobody:users` (99:100) is what the container runs as.
    - **Exposure:** `private` for LAN/Tailscale.
-   - For push notifications: **Gotify URL**, **Gotify token** and **Public URL** (see [Notifications](#notifications)).
+   - For push notifications: **Gotify URL**, **Gotify app token** and **Public URL** (see [Notifications](#notifications)).
 4. **Apply,** then open the WebUI (`http://<unraid-ip>:5173`).
 
-To update, click the container's icon → **Force update** (or use the update the Docker tab offers). Your data in `/mnt/user/appdata/wickline` is kept; see [UPGRADE.md](UPGRADE.md). Fetch the template again with the same command when a release adds settings.
+To update, click the container's icon → **Force update** (or use the update the Docker tab offers). Your data in `/mnt/user/appdata/wickline` is kept.
+
+**Do not run the `wget` command again after installing.** Unraid saves your values (password hash, TOTP secret, Gotify token) in that same `my-wickline.xml`, so downloading over it wipes them. When a release adds a setting you want, open the container's **Edit** page and use *Add another Path, Port, Variable, Label or Device* to add it by name (the variables are listed under [Configuration](#configuration)).
 
 ### Docker Compose
 
