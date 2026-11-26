@@ -1,6 +1,8 @@
 # Phase 5 design: server-side paper trading
 
-Status: **proposal v2 for the owner's approval** (2026-11-26), reworked after an independent review (Codex: REWORK) of v1. Nothing here is built yet.
+Status: **v3, approved by the owner as best effort** (2026-11-26).
+
+The independent review (Codex) asked for rework twice. The remaining issues come from upstream's browser engine, which the fork cannot fence without editing upstream (§8). The owner chose **option A**: the server watches paper orders while no main window is open, as **best effort**, with the limits documented. The cheap fixes from the second review are included here.
 
 v1 ran two engines on the same account at once (the browser's and the server's). Whole-account compare-and-swap cannot make two engines agree: a browser change still in upstream's 300 ms save timer could vanish silently, an old price could fill an order created after it, and buying power could be judged on different marks. **v2 has a single owner at a time: the server fills only while no main window is open.**
 
@@ -59,9 +61,9 @@ extended with **behavioural** tests against the real engine:
 - **Presence:** every **main** window sends `POST /api/selfhost/presence` every 30 s. `boot.js` does this,
   and pop-out windows (`?popout=1`) never fill, so they never report. This is a self-hosted addition only;
   upstream is not changed.
-- **Serving the page:** serving `index.html` also counts as presence. It renews the lease **before** the
-  snapshot is built, so the server cannot fill between the snapshot a page starts from and its first
-  report.
+- **Serving the page:** a **GET** of `index.html` for a main window counts as presence. A HEAD request
+  and a pop-out URL do not. It renews the lease **before** the snapshot is built, so the server cannot
+  fill between the snapshot a page starts from and its first report.
 - **The lease:** 150 s, so it outlives background timer throttling, which can stretch a hidden tab's
   timers to once a minute.
 - **A tab that stops reporting:** a closed tab, a frozen tab, or a phone gone to sleep. The server takes over
@@ -96,20 +98,26 @@ extended with **behavioural** tests against the real engine:
 - **One place, one account:** a single evaluator on the main thread keeps the account in memory as a
   `PaperAccount`. Every symbol's mark is in that one object, so buying power is always judged on one
   coherent set of marks. The worker only delivers prices; it runs no engine.
-- **Ordered prices:** the worker sends each price for a watched symbol in arrival order. The evaluator
-  applies them one by one (`tick`, with milliseconds converted to seconds). Each message carries the
-  evaluator's **generation**, and messages from an older generation are dropped.
+- **Ordered prices:** the worker sends each price for a watched symbol in arrival order, with its
+  receipt time. The evaluator applies them one by one (`tick`, with milliseconds converted to seconds).
+  - **A barrier:** an **external** change to the account (anything but the evaluator's own commit) starts
+    a new generation. Prices received before that moment are dropped, so a price from before an order
+    existed cannot fill it.
+  - **The evaluator's own commits** do not start a new generation, so the following prices from the
+    same stream still apply.
 - **Committing a result:** the account, the outbox rows and the new generation checkpoint are written in
   one SQLite transaction (`state.mutate` plus `outbox.insert`), as alert triggers are.
-  - The write is a compare-and-swap against the version the evaluator holds.
-  - If the stored version moved (an import, a restore, the API, a browser that slipped in), the result
-    is **discarded**: the evaluator reloads, starts a new generation, and the price is not replayed.
-  - A failed transaction also reloads from storage, so the in-memory copy never drifts from what is
-    stored.
-- **Freshness:** only **streamed** prices fill. Each needs a source time from the feed where it has one
-  (Yahoo's tick time is kept for this), and it must be under 60 s old. REST fallback prices do not fill:
-  they can be delayed and carry no trade time. A stale or unsupported symbol pauses server fills for
-  that symbol, and the status says so.
+  - The write is a compare-and-swap against the **epoch and the version** the evaluator holds. An import
+    resets versions to 1, so the epoch is needed too.
+  - If either moved (an import, a restore, the API, a browser that slipped in), the result is
+    **discarded**: the evaluator reloads and starts a new generation, and the price is not replayed.
+  - **A transient storage failure** (not a conflict) reloads, then **replays that one price once**, so a
+    crossing is not lost to a hiccup. A second failure pauses the evaluator and is shown in the status.
+- **Freshness:** only **streamed** prices fill; REST fallback prices do not, because they can be delayed.
+  A price must have arrived less than 10 s before it is evaluated, which also covers a backed-up queue.
+  This is quote freshness, not a proof of trade time: exchanges' ticker times describe when the ticker
+  was generated. A stale or unsupported symbol pauses server fills for that symbol, and the status says
+  so.
 - **Reset, import, restore, or a deleted `paper` key:** the evaluator listens for epoch changes and
   `paper` changes, reloads, and starts a new generation.
 
@@ -125,10 +133,11 @@ extended with **behavioural** tests against the real engine:
 
 - **What is pushed:** each fill or rejection the server commits is queued **in the same transaction**
   (`outbox.insert`, then a kick after the commit).
-- **The key:** `paper:<epoch>:<account version>:<result id>`. That is unique across resets (the version
-  keeps rising) and across imports or restores (the epoch changes).
-- **The guarantee:** pushes are queued exactly once and delivered at least once. A crash after Gotify
-  accepted a message but before Wickline recorded it can repeat that one push, as for alerts.
+- **The key:** `paper:<epoch>:<account version>:<n>`, where `n` is the result's position in that commit.
+  Rejections have no id of their own, so the position is used instead.
+- **The guarantee:** pushes are **queued once** and delivered with the outbox's bounded retries (up to
+  `NOTIFY_MAX_ATTEMPTS`). As for alerts, a crash between Gotify accepting a message and Wickline recording
+  it can repeat that one push.
 - **Text:**
   - "AAPL stop loss filled at 189.50", then "Sell 10 · P&L +125.00 · Paper";
   - "AAPL limit order rejected: insufficient buying power".
@@ -149,19 +158,34 @@ extended with **behavioural** tests against the real engine:
   quota failure on commit is logged and shown in the status, and the evaluator stops until the next
   reload.
 
+## 8. Known limits (best effort)
+
+These come from upstream's browser engine, which fills and saves on its own. The fork cannot fence it
+without editing upstream (option B, rejected). SELFHOSTED.md states them plainly:
+- **The lease gap:** for up to 150 s after the last main window closes or freezes, nobody fills. A crossing
+  that goes and comes back inside that time is missed.
+- **A waking tab:** for example, a phone that slept past the lease. It can fill from its old copy before it
+  learns the server took over. Its save is usually rejected and it reloads, with the "replaced" notice. A
+  change made in the 300 ms before an incoming update can be lost **silently**.
+- **Several windows or devices:** each runs upstream's engine. This is upstream's behaviour today, and the
+  server stays out while any of them is present.
+- **A change that never reached the server:** for example, a cancellation made just before closing the
+  tab, on a slow connection. The server works from the last saved account and can fill that order.
+- **Prices the server never saw:** for example, while the container was down. These cannot be replayed.
+
 ## Phasing
 
 | PR | Content |
 |---|---|
-| 5a | Presence (`boot.js`, `POST /api/selfhost/presence`, `index.html` renewal), the ownership state machine and handover, the evaluator with generations and its compare-and-swap commit, source-time freshness, the behavioural engine contracts. Deterministic tests, including: a browser change in the 300 ms timer is never replaced while present; an old tick never fills a newer order; cross-symbol buying power; a failed commit reloads; reset or import with queued messages; a lost `beforeunload` save across a handover; a restart. |
+| 5a | Presence (`boot.js`, `POST /api/selfhost/presence`, GET `index.html` renewal for main windows), the ownership state machine and handover, the evaluator with its barrier and its epoch-and-version commit, receipt-time freshness, the behavioural engine contracts. Deterministic tests, including: a browser change in the 300 ms timer is never replaced while present; an old tick never fills a newer order; cross-symbol buying power; a failed commit reloads; reset or import with queued messages; a lost `beforeunload` save across a handover; a restart. |
 | 5b | Notifications in the commit transaction, the coverage and status reporting, independent settings, docs (SELFHOSTED.md, the Unraid template), a live run against a real feed, and a pause for unsupported or stale symbols. |
 
-## Open questions for the owner
+## Decisions (owner, 2026-11-26)
 
-1. **Pushes:** push every server fill and rejection (default), or only stop, stop-loss and take-profit fills?
-2. **REST prices:** server fills use streamed prices only (default, safest). Should REST fallback prices
-   also fill during a stream outage, accepting that they can be delayed?
-3. **Default on:** `PAPER_SERVER=true` by default (proposed), or opt-in?
+1. Push every server fill and rejection.
+2. Server fills use streamed prices only.
+3. `PAPER_SERVER=true` by default.
+4. Best effort (option A), with the limits in §8 documented.
 
 ## Risks
 
