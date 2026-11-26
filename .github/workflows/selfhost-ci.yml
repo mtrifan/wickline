@@ -108,7 +108,7 @@ jobs:
           list=trusted/selfhost/test/fixtures/db/IMMUTABLE
           [ -f "$list" ] || { echo "no frozen fixtures yet"; exit 0; }
           status=0
-          while read -r f; do
+          while IFS= read -r f || [ -n "$f" ]; do # the last line counts even without a final newline
             case "$f" in ''|'#'*) continue ;; esac
             cmp -s "trusted/selfhost/test/fixtures/db/$f" "candidate/selfhost/test/fixtures/db/$f" \
               || { echo "::error::selfhost/test/fixtures/db/$f was changed or removed; frozen fixtures are never rebuilt"; status=1; }
