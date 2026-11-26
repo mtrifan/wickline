@@ -108,13 +108,19 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
   // per-process credential that never leaves this process. A reverse proxy forwards to the public
   // port only, so this listener is not reachable from outside the host.
   const internalHex = randomBytes(32).toString('hex');
-  const internalServer = cfg.alertsServer ? http.createServer((req, res) => {
-    let url;
-    try { url = new URL(req.url, 'http://localhost'); } catch { url = null; }
-    const given = Buffer.from(String(req.headers['x-wickline-internal'] ?? ''), 'utf8');
-    const tokenOk = given.length === internalHex.length && timingSafeEqual(given, Buffer.from(internalHex));
-    if (!tokenOk || !url || req.method !== 'GET' || !INTERNAL_ROUTES.has(url.pathname)) return sendJson(res, 403, { error: 'Forbidden' });
-    try { return upstreamHandler(req, res); } catch (e) { log.error('internal request failed', { error: e }); res.destroy(); }
+  const internalServer = cfg.alertsServer ? http.createServer(async (req, res) => {
+    try {
+      stripCors(res);
+      let url;
+      try { url = new URL(req.url, 'http://localhost'); } catch { url = null; }
+      const given = Buffer.from(String(req.headers['x-wickline-internal'] ?? ''), 'utf8');
+      const tokenOk = given.length === internalHex.length && timingSafeEqual(given, Buffer.from(internalHex));
+      if (!tokenOk || !url || req.method !== 'GET' || !INTERNAL_ROUTES.has(url.pathname)) return sendJson(res, 403, { error: 'Forbidden' });
+      return await upstreamHandler(req, res);
+    } catch (e) {
+      log.error('internal request failed', { error: e });
+      try { res.destroy(); } catch { /* gone */ }
+    }
   }) : null;
 
   const cookieSecure = (info) => cfg.cookieSecure === 'true' || cfg.exposure === 'public' || (cfg.cookieSecure === 'auto' && info.proto === 'https');
@@ -253,14 +259,28 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
 
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(cfg.port, cfg.host, resolve); });
   const port = server.address().port;
-  if (internalServer) await new Promise((resolve, reject) => { internalServer.once('error', reject); internalServer.listen(0, '127.0.0.1', resolve); });
+  if (internalServer) {
+    const listenOn = (host) => new Promise((resolve, reject) => {
+      const fail = (e) => { internalServer.off('listening', ok); reject(e); };
+      const ok = () => { internalServer.off('error', fail); resolve(); };
+      internalServer.once('error', fail);
+      internalServer.once('listening', ok);
+      internalServer.listen(0, host);
+    });
+    try {
+      await listenOn('127.0.0.1').catch(() => listenOn('::1')); // an IPv6-only container has no 127.0.0.1
+    } catch (e) {
+      await new Promise((r) => server.close(() => r())); // never leave the public port open on a failed start
+      throw e;
+    }
+  }
   // Server-side alerts (PLAN §2.5): a worker thread reads upstream's Yahoo relay over loopback.
   const supervisor = cfg.alertsServer ? createAlertSupervisor({
     ledger: alerts,
     sync,
     log,
     workerData: {
-      baseUrl: `http://127.0.0.1:${internalServer.address().port}`,
+      baseUrl: internalServer.address().family === 'IPv6' ? `http://[::1]:${internalServer.address().port}` : `http://127.0.0.1:${internalServer.address().port}`,
       token: internalHex,
       extendedHours: cfg.alertExtendedHours,
       resumeMaxGapMs: cfg.alertResumeMaxGapMin * 60_000,

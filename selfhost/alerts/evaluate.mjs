@@ -62,7 +62,7 @@ export function createEvaluator({ extendedHours = true, resumeMaxGapMs = 15 * 60
       }
       // Re-armed: the first price is ignored, like upstream; nothing from before it is a resume point.
       if (active && !cur.active) { cur.chains.clear(); cur.last = null; }
-      if (normalizeSymbol(a.symbol) !== cur.key) { cur.key = normalizeSymbol(a.symbol); cur.chains.clear(); }
+      if (normalizeSymbol(a.symbol) !== cur.key) { cur.key = normalizeSymbol(a.symbol); cur.chains.clear(); cur.last = null; }
       cur.alert = alert;
       cur.active = active;
     }
