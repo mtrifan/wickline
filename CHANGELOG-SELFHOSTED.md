@@ -6,6 +6,12 @@ Release tags: `sh-v<upstream version>-<revision>`. Image tags: `<upstream versio
 
 ## Unreleased
 
+### Changed
+- Based on upstream **v0.1.11** (from v0.1.9): Bybit and OKX (spot and perpetuals), editing drawings by the numbers, back to the latest candle, and more; see the upstream [releases](https://github.com/keptaduona/wickline/releases). The drawing magnet setting syncs between devices.
+
+### Known limitations
+- Alerts on Bybit and OKX symbols are checked only while Wickline is open in a browser tab (their triggers are still pushed). The server-side checker learns them in a later release.
+
 ## sh-v0.1.9-1 — 2026-11-26
 
 The first release. Images: `ghcr.io/mtrifan/wickline:0.1.9-sh.1` (immutable), `:0.1.9`, and `:stable` / `:latest` after approval.

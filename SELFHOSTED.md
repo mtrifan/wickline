@@ -211,7 +211,7 @@ See [UPGRADE.md](UPGRADE.md). In short: everything lives in the `/data` volume (
 
 - Single user.
 - A market counts as open while its symbol trades: a symbol with no trade for 15 minutes during the session counts as closed until it trades again, so a very thinly traded stock can be checked less often.
-- Alerts on other providers (none exist in the app today) are checked only in the browser.
+- Alerts on Bybit and OKX symbols (new in upstream 0.1.10) are checked only while Wickline is open in a browser tab; their triggers are still pushed. `/api/selfhost/alerts/status` lists them as unsupported until the server-side checker learns them.
 - The content security policy is report-only, because upstream relies on an inline script and `unsafe-eval` in its script sandbox.
 
 ## Licence
