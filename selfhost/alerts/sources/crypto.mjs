@@ -32,9 +32,26 @@ export const BYBIT_REST = ['https://api.bybit.com', 'https://api.bytick.com'];
 export const BYBIT_WS = ['wss://stream.bybit.com', 'wss://stream.bytick.com'];
 export const OKX_REST = ['https://www.okx.com', 'https://aws.okx.com'];
 export const OKX_WS = ['wss://ws.okx.com:8443/ws/v5/public', 'wss://wsaws.okx.com:8443/ws/v5/public'];
+// Tried first: OKX announced the end of port 8443 for public connections (upstream still uses it;
+// both work as of 2026-11-26). The port-less host keeps streaming either way.
+const OKX_WS_HOSTS = ['wss://ws.okx.com/ws/v5/public', ...OKX_WS];
 export const bybitCategory = (market) => (market === 'BYBITF' ? 'linear' : 'spot');
 export const okxId = (market, ticker) => (market === 'OKXF' ? `${ticker}-SWAP` : ticker);
 const EXCHANGE_PING_MS = 20_000; // both drop a connection that sends nothing for 30 s
+// Pongs keep a connection "alive" even if its subscription stalled: with no price at all for this
+// long, it is reopened (and resubscribed). Long enough for quiet pairs not to churn.
+const PRICE_SILENCE_MS = 5 * 60_000;
+
+/**
+ * A price from an exchange field: a positive finite number, or NaN. Number('') and Number(null) are
+ * 0, which would read as a crash to zero and fire alerts; crypto prices are never zero or negative.
+ */
+export function toPrice(v) {
+  if (typeof v === 'number') return Number.isFinite(v) && v > 0 ? v : NaN;
+  if (typeof v !== 'string' || !/^\s*\d+(\.\d+)?([eE][-+]?\d+)?\s*$/.test(v)) return NaN;
+  const n = Number(v);
+  return n > 0 ? n : NaN;
+}
 
 /** Streams per Binance connection (Binance allows 1024 on spot, 200 on futures). */
 const BINANCE_PER_CONN = 200;
@@ -77,7 +94,7 @@ export function createBinanceSource({ market, openWs, onTick, onState = () => {}
       onState,
       onMessage(text) {
         const d = JSON.parse(text).data;
-        const price = Number(d?.c);
+        const price = toPrice(d?.c);
         if (d && typeof d.s === 'string' && Number.isFinite(price)) onTick({ symbol: `${market}:${d.s}`, price, session: 1, at: Date.now() });
       },
     });
@@ -96,7 +113,7 @@ export function createCoinbaseSource({ openWs, onTick, onState = () => {}, log, 
     onOpen(ws) { ws.send(JSON.stringify({ type: 'subscribe', product_ids: tickers, channels: ['ticker', 'heartbeat'] })); },
     onMessage(text) {
       const m = JSON.parse(text);
-      const price = Number(m.price);
+      const price = toPrice(m.price);
       if (m.type === 'ticker' && typeof m.product_id === 'string' && Number.isFinite(price)) onTick({ symbol: `COINBASE:${m.product_id}`, price, session: 1, at: Date.now() });
       else if (m.type === 'error') log?.warn?.('Coinbase refused the subscription', { message: m.message, reason: m.reason });
     },
@@ -113,6 +130,7 @@ export function createBybitSource({ market, openWs, onTick, onState = () => {}, 
     log,
     onState,
     silenceMs: 60_000,
+    priceSilenceMs: PRICE_SILENCE_MS,
     ping: { everyMs: EXCHANGE_PING_MS, message: () => JSON.stringify({ op: 'ping' }) },
     onOpen(ws) {
       const topics = tickers.map((t) => `tickers.${t}`);
@@ -120,11 +138,13 @@ export function createBybitSource({ market, openWs, onTick, onState = () => {}, 
     },
     onMessage(text) {
       const m = JSON.parse(text);
-      if (!m.topic?.startsWith('tickers.') || !m.data) return;
+      if (!m.topic?.startsWith('tickers.') || !m.data) return false;
       // Perpetual updates carry only the fields that changed: no lastPrice means no new price.
-      const price = m.data.lastPrice != null ? Number(m.data.lastPrice) : NaN;
+      const price = toPrice(m.data.lastPrice);
       const ticker = m.data.symbol || m.topic.slice(8);
-      if (Number.isFinite(price)) onTick({ symbol: `${market}:${ticker}`, price, session: 1, at: Date.now() });
+      if (!Number.isFinite(price)) return false;
+      onTick({ symbol: `${market}:${ticker}`, price, session: 1, at: Date.now() });
+      return true;
     },
   }), perConn, onState);
 }
@@ -133,22 +153,27 @@ export function createBybitSource({ market, openWs, onTick, onState = () => {}, 
 export function createOkxSource({ market, openWs, onTick, onState = () => {}, log, perConn = 100 }) {
   return sharded((tickers) => keepOpen({
     name: `${market} stream`,
-    urls: () => OKX_WS,
+    urls: () => OKX_WS_HOSTS,
     openWs,
     log,
     onState,
     silenceMs: 60_000,
+    priceSilenceMs: PRICE_SILENCE_MS,
     ping: { everyMs: EXCHANGE_PING_MS, message: () => 'ping' },
     onOpen(ws) { ws.send(JSON.stringify({ op: 'subscribe', args: tickers.map((t) => ({ channel: 'tickers', instId: okxId(market, t) })) })); },
     onMessage(text) {
-      if (text === 'pong') return;
+      if (text === 'pong') return false;
       const m = JSON.parse(text);
-      if (m.event === 'error') { log?.warn?.('OKX refused the subscription', { code: m.code, message: m.msg }); return; }
-      if (m.arg?.channel !== 'tickers' || !Array.isArray(m.data)) return;
+      if (m.event === 'error') { log?.warn?.('OKX refused the subscription', { code: m.code, message: m.msg }); return false; }
+      if (m.arg?.channel !== 'tickers' || !Array.isArray(m.data)) return false;
+      let any = false;
       for (const d of m.data) {
-        const price = Number(d.last);
-        if (typeof d.instId === 'string' && Number.isFinite(price)) onTick({ symbol: `${market}:${d.instId.replace(/-SWAP$/, '')}`, price, session: 1, at: Date.now() });
+        const price = toPrice(d.last);
+        if (typeof d.instId !== 'string' || !Number.isFinite(price)) continue;
+        onTick({ symbol: `${market}:${d.instId.replace(/-SWAP$/, '')}`, price, session: 1, at: Date.now() });
+        any = true;
       }
+      return any;
     },
   }), perConn, onState);
 }
@@ -215,7 +240,7 @@ export function createCryptoRest({ fetch: fetchFn, concurrency = 4 }) {
 
   const rowsToMap = (rows, tickers) => {
     const want = new Set(tickers);
-    return new Map(rows.filter((r) => want.has(r?.symbol) && Number.isFinite(Number(r.lastPrice))).map((r) => [r.symbol, Number(r.lastPrice)]));
+    return new Map(rows.filter((r) => want.has(r?.symbol) && Number.isFinite(toPrice(r.lastPrice))).map((r) => [r.symbol, toPrice(r.lastPrice)]));
   };
 
   async function binance(market, tickers) {
@@ -237,16 +262,22 @@ export function createCryptoRest({ fetch: fetchFn, concurrency = 4 }) {
     const out = new Map();
     await eachLimited(tickers, concurrency, async (t) => {
       const s = await getJson(fetchFn, `${COINBASE_REST}/products/${encodeURIComponent(t)}/stats`);
-      if (Number.isFinite(Number(s?.last))) out.set(t, Number(s.last));
+      const price = toPrice(s?.last);
+      if (Number.isFinite(price)) out.set(t, price);
     });
     return out;
   }
-  /** The first host that answers; an exchange-level error (retCode / code not 0) counts as a failure. */
+  /**
+   * The first host that answers; an exchange-level error (retCode / code not 0) counts as a failure,
+   * and an exchange's own "too many requests" answer backs off like HTTP 429 (Bybit 10006 / 10018,
+   * OKX 50011).
+   */
   async function fromHosts(hosts, path, ok) {
     let last;
     for (const host of hosts) {
       try {
         const body = await getJson(fetchFn, host + path);
+        if ([10006, 10018].includes(body?.retCode) || body?.code === '50011') throw new RateLimited(429, 30_000);
         if (!ok(body)) throw new Error(`exchange error: ${String(body?.retMsg ?? body?.msg ?? 'unknown').slice(0, 100)}`);
         return body;
       } catch (e) {
@@ -261,19 +292,22 @@ export function createCryptoRest({ fetch: fetchFn, concurrency = 4 }) {
     const out = new Map();
     await eachLimited(tickers, concurrency, async (t) => {
       const body = await fromHosts(BYBIT_REST, `/v5/market/tickers?category=${bybitCategory(market)}&symbol=${encodeURIComponent(t)}`, (b) => b?.retCode === 0);
-      const price = Number(body.result?.list?.[0]?.lastPrice);
+      const price = toPrice(body.result?.list?.[0]?.lastPrice);
       if (Number.isFinite(price)) out.set(t, price);
     });
     return out;
   }
 
+  /** One request per market, as upstream lists them: every ticker of SPOT or SWAP, filtered here. */
   async function okx(market, tickers) {
+    const body = await fromHosts(OKX_REST, `/api/v5/market/tickers?instType=${market === 'OKXF' ? 'SWAP' : 'SPOT'}`, (b) => b?.code === '0');
+    const ids = new Map(tickers.map((t) => [okxId(market, t), t]));
     const out = new Map();
-    await eachLimited(tickers, concurrency, async (t) => {
-      const body = await fromHosts(OKX_REST, `/api/v5/market/ticker?instId=${encodeURIComponent(okxId(market, t))}`, (b) => b?.code === '0');
-      const price = Number(body.data?.[0]?.last);
-      if (Number.isFinite(price)) out.set(t, price);
-    });
+    for (const r of Array.isArray(body.data) ? body.data : []) {
+      const t = ids.get(r?.instId);
+      const price = toPrice(r?.last);
+      if (t && Number.isFinite(price)) out.set(t, price);
+    }
     return out;
   }
 

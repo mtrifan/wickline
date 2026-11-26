@@ -117,4 +117,9 @@ test('the alert worker\'s Bybit and OKX sources use upstream\'s hosts, channels 
   assert.match(src, /ticker: d\.instId\.replace\(\/-SWAP\$\/, ''\), last: \+d\.last/, `${point('crypto-feeds')} OKX last price`);
   assert.match(src, /ping: \(\) => 'ping'/, `${point('crypto-feeds')} OKX ping`);
   assert.deepEqual(Object.keys((await importUpstream('public/js/crypto-exchanges.js')).EXCHANGE_SOURCES), ['BYBIT', 'BYBITF', 'OKX', 'OKXF'], `${point('crypto-feeds')} exchange markets`);
+  // REST fallback: the same ticker endpoints and price fields upstream reads.
+  assert.match(src, /bybitGet\(src, `\/v5\/market\/tickers\?category=\$\{cat\}`\)/, `${point('crypto-feeds')} Bybit REST tickers endpoint`);
+  assert.match(src, /const last = \+r\.lastPrice;/, `${point('crypto-feeds')} Bybit REST lastPrice`);
+  assert.match(src, /okxGet\(src, `\/api\/v5\/market\/tickers\?instType=\$\{src === 'OKXF' \? 'SWAP' : 'SPOT'\}`\)/, `${point('crypto-feeds')} OKX REST tickers endpoint`);
+  assert.match(src, /const last = \+r\.last;/, `${point('crypto-feeds')} OKX REST last`);
 });

@@ -11,9 +11,11 @@ const MAX_BACKOFF_MS = 30_000;
  *   openWs    (url) => a WebSocket (injected: the worker's routes it through WICKLINE_PROXY)
  *   ping      { everyMs, message: () => string }: an application-level ping some exchanges need
  *             (Bybit, OKX); its replies also keep the silence watchdog quiet
+ *   priceSilenceMs  reopen a connection that has delivered no price for this long, even if pongs
+ *             keep arriving (a stalled subscription). onMessage returns true for a price.
  * Returns { close(), get connected() }.
  */
-export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState = () => {}, silenceMs = 180_000, ping = null, log, name = 'stream' }) {
+export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState = () => {}, silenceMs = 180_000, priceSilenceMs = null, ping = null, log, name = 'stream' }) {
   let ws = null;
   let host = 0;
   let retry = 0;
@@ -23,6 +25,7 @@ export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState =
   let watchdog = null;
   let pinger = null;
   let lastMessage = 0;
+  let lastPrice = 0;
   let openedAt = 0;
 
   const setConnected = (v) => { if (connected !== v) { connected = v; onState(); } };
@@ -38,7 +41,7 @@ export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState =
     openedAt = Date.now();
     sock.onopen = () => {
       if (ws !== sock) return;
-      lastMessage = Date.now();
+      lastMessage = lastPrice = Date.now(); // the price clock starts at the subscription
       setConnected(true);
       try { onOpen(sock); } catch (e) { log?.error?.(`${name} subscribe failed`, { error: e?.message }); }
       if (ping) {
@@ -51,7 +54,9 @@ export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState =
       if (ws !== sock) return;
       lastMessage = Date.now();
       retry = 0; // only data proves the connection works: a socket that opens and drops keeps backing off
-      try { onMessage(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString()); } catch (e) { log?.debug?.(`${name} message dropped`, { error: e?.message }); }
+      try {
+        if (onMessage(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString()) === true) lastPrice = Date.now();
+      } catch (e) { log?.debug?.(`${name} message dropped`, { error: e?.message }); }
     };
     sock.onerror = () => {}; // a close event follows
     sock.onclose = () => {
@@ -73,8 +78,10 @@ export function keepOpen({ urls, openWs, onOpen = () => {}, onMessage, onState =
   }
 
   watchdog = setInterval(() => {
-    const stuck = ws && !connected && Date.now() - openedAt > 30_000; // a handshake that never completes
-    if (stuck || (ws && connected && Date.now() - lastMessage > silenceMs)) {
+    const now = Date.now();
+    const stuck = ws && !connected && now - openedAt > 30_000; // a handshake that never completes
+    const stalled = ws && connected && priceSilenceMs != null && now - lastPrice > priceSilenceMs;
+    if (stuck || stalled || (ws && connected && now - lastMessage > silenceMs)) {
       log?.debug?.(`${name} silent; reconnecting`);
       try { ws.close(); } catch { /* closing anyway */ }
     }
