@@ -6,7 +6,16 @@ Release tags: `sh-v<upstream version>-<revision>`. Image tags: `<upstream versio
 
 ## Unreleased
 
+## sh-v0.1.9-1 — 2026-11-26
+
+The first release. Images: `ghcr.io/mtrifan/wickline:0.1.9-sh.1` (immutable), `:0.1.9`, and `:stable` / `:latest` after approval.
+
 ### Added
+- Releases and regression safety (Phase 4):
+  - Release workflow for `sh-v*` tags. It checks the tag against the version files and the changelog, runs the full suite and the container tests, and publishes immutable images with SBOM and provenance plus a GitHub release. `:stable` and `:latest` move only after approval.
+  - Migration fixtures for every schema version, frozen in CI: each must upgrade to the current schema with every row intact.
+  - A container upgrade-and-rollback test on every change. A nightly run of the browser suite on Chromium, WebKit and Firefox, and of upstream's desktop end-to-end test.
+  - Documentation: Unraid install and update, configuration, architecture, upgrade and rollback, release steps.
 - Server-side alerts and push notifications (Phase 3):
   - Gotify notifications through a durable outbox: retries from 5 s to 30 min, one push per alert trigger however many devices report it, a test command (`cli.mjs notify-test`) and status (`/api/selfhost/notify/status`).
   - Alerts checked on the server around the clock, in a supervised worker thread: Yahoo through upstream's own relay, Binance spot and futures, Coinbase. Upstream's crossing rules (pinned by a contract test), one price chain per market session (`ALERT_EXTENDED_HOURS`), resume after a short restart.
