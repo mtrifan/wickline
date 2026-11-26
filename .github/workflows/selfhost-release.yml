@@ -59,35 +59,8 @@ jobs:
           { echo "upstream=$upstream"; echo "revision=$revision"; echo "version=$upstream-sh.$revision"; echo "sha=$(git rev-parse --short HEAD)"; } >> "$GITHUB_OUTPUT"
       - name: The image tag must not exist yet
         env:
-          VERSION: ${{ steps.v.outputs.version }}
           GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository_owner }}/wickline
-        run: |
-          # Ask the registry directly. Only an explicit 404 for the manifest means "not published";
-          # any other answer (auth, rate limit, outage) stops the release, so it can never fail open
-          # and overwrite an immutable tag.
-          set -uo pipefail
-          token=$(curl -fsS -u "x:$GH_TOKEN" "https://ghcr.io/token?scope=repository:$REPO:pull" | jq -r .token) || { echo "::error::could not get a registry token"; exit 1; }
-          for attempt in 1 2 3; do
-            code=$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" \
-              -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
-              "https://ghcr.io/v2/$REPO/manifests/$VERSION") || code=000
-            case "$code" in
-              404)
-                # A 404 can also mean "exists, in a format this Accept header does not cover":
-                # confirm with the registry's own tag list before treating it as unpublished.
-                tags=$(curl -fsS -H "Authorization: Bearer $token" "https://ghcr.io/v2/$REPO/tags/list?n=10000") \
-                  && jq -e '.tags | type == "array"' <<<"$tags" >/dev/null || { echo "registry tag list unavailable (attempt $attempt)"; sleep $((attempt * 10)); continue; }
-                if jq -e --arg v "$VERSION" '.tags | index($v)' <<<"$tags" >/dev/null; then
-                  echo "::error::$IMAGE:$VERSION already exists; release tags are immutable. Bump selfhost/VERSION and tag again."; exit 1
-                fi
-                echo "$IMAGE:$VERSION is not published yet"; exit 0 ;;
-              200) echo "::error::$IMAGE:$VERSION already exists; release tags are immutable. Bump selfhost/VERSION and tag again."; exit 1 ;;
-              *) echo "registry answered $code (attempt $attempt)"; sleep $((attempt * 10)) ;;
-            esac
-          done
-          echo "::error::could not confirm that $IMAGE:$VERSION is unpublished (registry answered $code); not releasing"
-          exit 1
+        run: selfhost/ci/image-unpublished.sh "${{ github.repository_owner }}/wickline" "${{ steps.v.outputs.version }}"
 
   tests:
     name: full suite
@@ -123,12 +96,18 @@ jobs:
     needs: [check, tests, image]
     runs-on: ubuntu-latest
     permissions:
-      contents: write # the GitHub release
+      contents: read
       packages: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      - name: The image tag must still not exist
+        # Again here, not only in `check`: "Re-run failed jobs" re-runs this job with the old
+        # check result, and must not overwrite an image it already pushed.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: selfhost/ci/image-unpublished.sh "${{ github.repository_owner }}/wickline" "${{ needs.check.outputs.version }}"
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -160,6 +139,18 @@ jobs:
           provenance: mode=max
           sbom: true
           cache-from: type=gha
+
+  release:
+    # Its own job: retrying a failed release-notes step never rebuilds or republishes the image.
+    name: GitHub release
+    needs: [check, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: GitHub release with the changelog section
         env:
           GH_TOKEN: ${{ github.token }}
