@@ -78,6 +78,10 @@ Everything is set through environment variables. Each secret also accepts `<NAME
 | `ALERT_EXTENDED_HOURS` | `true` | Also check pre-market and after-hours prices. Each session is compared only with itself, so the jump from one session to the next never counts as a crossing. |
 | `ALERT_RESUME_MAX_GAP` | `15` | Minutes. After a restart within this time, the last price seen before it is kept, so a crossing during the downtime fires once (the notification says so). After a longer gap the first price is only a starting point. |
 | `ALERT_MAX_SYMBOLS` | `200` | Most symbols with armed alerts checked on the server. Beyond it, some are left to the browser and a warning is logged. |
+| `ALERT_POLL_INTERVAL` | `30` | Seconds between fallback price requests for a symbol whose live stream has gone quiet while its market is open (minimum 10). |
+| `ALERT_CLOSED_POLL_INTERVAL` | `900` | Seconds between checks of whether a closed market has reopened. |
+| `ALERT_STALE_AFTER` | 5 crypto, 10 others | Minutes without a live price, while the market is open, before the fallback starts. Setting it applies one value to every symbol. |
+| `NOTIFY_STALE` | `false` | Also send a notification when a symbol gets no prices at all (stream and fallback) while its market is open. One per episode. |
 | `WICKLINE_PROXY` | none | Outbound HTTP or SOCKS5 proxy for market data (also `HTTPS_PROXY`, `ALL_PROXY`). |
 | `PORT`, `HOST`, `DATA_DIR` | `5173`, `0.0.0.0`, `/data` | Listener and data location. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. Logs are JSON lines on stdout/stderr. |
@@ -145,7 +149,14 @@ Run only one container on a data folder: a second one refuses to start while the
 
 When an alert fires in an open Wickline tab, the server sends one notification for it: a second device that saw the same crossing, or a retried request, does not send another. An alert that fired on a device while it was offline is pushed when the device reconnects, if that was within the last 15 minutes. The notification shows the alert ("BTCUSDT crossing up 100000") and the price at that moment, plus your note. 
 
-The server also checks alerts itself, with no browser open, using the same live Yahoo prices the app shows (stocks, ETFs, indices, futures, forex). It follows the app's rules: "crossing up" fires when the price goes from below the level to at or above it, and the first price after you arm an alert is only a starting point. Whichever side sees a crossing first, the server or a browser, records it; the notification is sent once. While signed in, `/api/selfhost/alerts/status` shows whether the checker is running, how many symbols it watches, and which alert symbols it cannot check yet. Crypto symbols from Binance and Coinbase are still checked only in the browser.
+The server also checks alerts itself, with no browser open, using the same live prices the app shows: Yahoo (stocks, ETFs, indices, futures, forex), Binance spot and futures, and Coinbase. It follows the app's rules: "crossing up" fires when the price goes from below the level to at or above it, and the first price after you arm an alert is only a starting point. Whichever side sees a crossing first, the server or a browser, records it; the notification is sent once. While signed in, `/api/selfhost/alerts/status` shows whether the checker is running, how many symbols it watches, and the state of each symbol:
+
+- **live:** prices are streaming.
+- **closed:** the market is closed (no trades in the last 15 minutes: nights, weekends, holidays). Quiet is expected, and nothing is requested until it reopens.
+- **fallback:** the stream went quiet while the market is open, so the price is requested every `ALERT_POLL_INTERVAL` seconds instead and alerts keep working. For Yahoo symbols the fallback gets the regular-session price, so during pre-market and after-hours a stream outage pauses extended-hours checks until the stream returns.
+- **stale:** the fallback failed too, so there is no price at all. Its alerts cannot fire until prices return; `NOTIFY_STALE=true` sends a notification when this starts (at most one per symbol per hour).
+
+Crypto markets are always open. When Binance answers "too many requests", the fallback waits as long as Binance asks. Connections to Binance and Coinbase go through `WICKLINE_PROXY` when it is set.
 
 Like an app tab left open overnight, the checker compares the first regular-session price of the day with the previous close, so a level crossed between the close and the open fires at the open. If the checker stops, it is restarted automatically; `/api/health/ready` reports only the web server and database, so the checker restarting never marks the container unhealthy.
 
@@ -186,7 +197,8 @@ See [UPGRADE.md](UPGRADE.md). In short: everything lives in the `/data` volume (
 ## Known limitations
 
 - Single user.
-- The server checks only Yahoo symbols so far. Alerts on Binance and Coinbase symbols are checked only while Wickline is open in a browser tab (their triggers are still pushed). The server also has no fallback yet for a Yahoo stream that goes quiet while the market is open.
+- A market counts as open while its symbol trades: a symbol with no trade for 15 minutes during the session counts as closed until it trades again, so a very thinly traded stock can be checked less often.
+- Alerts on other providers (none exist in the app today) are checked only in the browser.
 - The content security policy is report-only, because upstream relies on an inline script and `unsafe-eval` in its script sandbox.
 
 ## Licence

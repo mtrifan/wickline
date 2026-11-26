@@ -6,49 +6,89 @@
 //                 { type: 'flush' }                   report progress now (shutdown)
 // worker -> main  { type: 'trigger', id, price, at, gap }
 //                 { type: 'progress', points: { id: { price, at, session } } }
+//                 { type: 'stale', symbol, since }    a symbol's prices stopped while its market is open
 //                 { type: 'heartbeat', status }       every HEARTBEAT_MS
-//                 { type: 'unsupported', symbols }    armed symbols no source serves yet
+//                 { type: 'unsupported', symbols }    armed symbols no source serves
 
 import { parentPort, workerData } from 'node:worker_threads';
 import { createEvaluator } from './evaluate.mjs';
-import { createYahooSource, yahooTicker } from './sources/yahoo.mjs';
+import { createFeeds, route, chartOpen } from './feeds.mjs';
+import { createNet } from './net.mjs';
+import { createYahooSource } from './sources/yahoo.mjs';
+import { createBinanceSource, createCoinbaseSource, createCryptoRest } from './sources/crypto.mjs';
 
 const HEARTBEAT_MS = 5_000;
 const PROGRESS_MS = 5_000;
+const STEP_MS = 5_000;
+const MIN = 60_000;
 
-const { baseUrl, token, extendedHours = true, resumeMaxGapMs = 15 * 60_000, maxSymbols = 200 } = workerData || {};
+const {
+  baseUrl, token, proxyUrl = null, extendedHours = true, resumeMaxGapMs = 15 * MIN, maxSymbols = 200,
+  pollMs = 30_000, closedPollMs = 15 * MIN, staleAfter = { crypto: 5 * MIN, equity: 10 * MIN },
+} = workerData || {};
 const send = (msg) => { try { parentPort.postMessage(msg); } catch { /* the main thread is gone */ } };
 const logger = (level) => (msg, data) => send({ type: 'log', level, msg, data });
 const log = { debug: logger('debug'), info: logger('info'), warn: logger('warn'), error: logger('error') };
 
+const net = createNet({ proxyUrl });
+const internal = { 'x-wickline-internal': token };
 const evaluator = createEvaluator({ extendedHours, resumeMaxGapMs });
+const cryptoRest = createCryptoRest({ fetch: net.fetch });
 let dirty = false;
 let truncated = 0;
 let unsupported = [];
 
-const yahoo = createYahooSource({
-  baseUrl,
-  headers: { 'x-wickline-internal': token },
-  log,
-  onTick(t) {
-    try {
-      for (const f of evaluator.tick(t)) send({ type: 'trigger', ...f });
-      dirty = true;
-    } catch (e) {
-      log.error('alert evaluation failed', { error: e?.message });
-    }
+async function loopbackJson(path) {
+  const r = await net.loopback(`${baseUrl}${path}`, { headers: internal, signal: AbortSignal.timeout(15_000) });
+  if (!r.ok) throw new Error(`relay answered ${r.status}`);
+  return r.json();
+}
+
+const rest = {
+  async prices(market, tickers) {
+    if (market !== 'YAHOO') return cryptoRest.fetchPrices(market, tickers);
+    const rows = await loopbackJson(`/api/yahoo/quotes?symbols=${tickers.map(encodeURIComponent).join(',')}`);
+    return new Map((Array.isArray(rows) ? rows : []).filter((q) => Number.isFinite(q?.price)).map((q) => [q.symbol, q.price]));
   },
+  /** Open when the 1-minute chart has a bar from the last 15 minutes (holidays and half days included). */
+  async marketOpen(ticker) {
+    return chartOpen(await loopbackJson(`/api/yahoo/chart?symbol=${encodeURIComponent(ticker)}&tf=1m&live=1&prepost=${extendedHours ? 1 : 0}`));
+  },
+};
+
+function onPrice(t) {
+  try {
+    for (const f of evaluator.tick(t)) send({ type: 'trigger', ...f });
+    dirty = true;
+  } catch (e) {
+    log.error('alert evaluation failed', { error: e?.message });
+  }
+}
+
+const feeds = createFeeds({
+  sources: {
+    YAHOO: createYahooSource({ baseUrl, headers: internal, fetch: net.loopback, log, onTick: (t) => feeds.tick(t) }),
+    BINANCE: createBinanceSource({ market: 'BINANCE', openWs: net.openWs, log, onTick: (t) => feeds.tick(t) }),
+    BINANCEF: createBinanceSource({ market: 'BINANCEF', openWs: net.openWs, log, onTick: (t) => feeds.tick(t) }),
+    COINBASE: createCoinbaseSource({ openWs: net.openWs, log, onTick: (t) => feeds.tick(t) }),
+  },
+  rest,
+  onPrice,
+  onStale: (symbol, since) => send({ type: 'stale', symbol, since }),
+  pollMs,
+  closedPollMs,
+  staleAfter,
+  log,
 });
 
 function applyAlerts(items, resume) {
   evaluator.setAlerts(items, { resume, now: Date.now() });
   const all = evaluator.symbols();
-  const tickers = [];
-  const other = [];
-  for (const s of all) { const t = yahooTicker(s); if (t) tickers.push(t); else other.push(s); }
-  truncated = Math.max(0, tickers.length - maxSymbols);
+  const supported = all.filter((s) => route(s));
+  const other = all.filter((s) => !route(s));
+  truncated = Math.max(0, supported.length - maxSymbols);
   if (truncated) log.warn('too many symbols with armed alerts; some are not watched', { watched: maxSymbols, skipped: truncated });
-  yahoo.setSymbols(tickers.slice(0, maxSymbols));
+  feeds.setSymbols(supported.slice(0, maxSymbols));
   if (other.join() !== unsupported.join()) {
     unsupported = other;
     send({ type: 'unsupported', symbols: other });
@@ -70,6 +110,8 @@ parentPort.on('message', (msg) => {
   }
 });
 
+const heartbeat = () => send({ type: 'heartbeat', status: { alerts: evaluator.size, truncated, unsupported: unsupported.length, ...feeds.status() } });
+setInterval(() => { try { feeds.step(); } catch (e) { log.error('feed schedule failed', { error: e?.message }); } }, STEP_MS).unref();
 setInterval(() => flushProgress(), PROGRESS_MS).unref();
-setInterval(() => send({ type: 'heartbeat', status: { ...yahoo.status(), alerts: evaluator.size, truncated, unsupported: unsupported.length } }), HEARTBEAT_MS);
-send({ type: 'heartbeat', status: { ...yahoo.status(), alerts: 0, truncated: 0, unsupported: 0 } });
+setInterval(heartbeat, HEARTBEAT_MS);
+heartbeat();

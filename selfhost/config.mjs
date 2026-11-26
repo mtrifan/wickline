@@ -99,6 +99,10 @@ export function loadConfig(env = process.env, { readFile = readFileSync } = {}) 
     alertExtendedHours: bool(env.ALERT_EXTENDED_HOURS, true),
     alertResumeMaxGapMin: int(env, 'ALERT_RESUME_MAX_GAP', 15, { min: 0, max: 1440 }, problems),
     alertMaxSymbols: int(env, 'ALERT_MAX_SYMBOLS', 200, { min: 1, max: 2000 }, problems),
+    alertPollSec: int(env, 'ALERT_POLL_INTERVAL', 30, { min: 10, max: 3600 }, problems),
+    alertClosedPollSec: int(env, 'ALERT_CLOSED_POLL_INTERVAL', 900, { min: 60, max: 86400 }, problems),
+    alertStaleAfterMin: env.ALERT_STALE_AFTER ? int(env, 'ALERT_STALE_AFTER', 10, { min: 1, max: 1440 }, problems) : null,
+    notifyStale: bool(env.NOTIFY_STALE, false),
   };
 
   if (!['debug', 'info', 'warn', 'error'].includes(cfg.logLevel)) problems.push('LOG_LEVEL must be debug, info, warn or error');

@@ -12,7 +12,7 @@ const MAX_RESTART_MS = 60_000;
 const STABLE_MS = 60_000; // a worker that ran this long resets the backoff
 const FLUSH_TIMEOUT_MS = 2_000;
 
-export function createAlertSupervisor({ ledger, sync, workerData, log, workerUrl = WORKER_URL, now = Date.now, heartbeatTimeoutMs = HEARTBEAT_TIMEOUT_MS }) {
+export function createAlertSupervisor({ ledger, sync, workerData, log, notifyStale = false, workerUrl = WORKER_URL, now = Date.now, heartbeatTimeoutMs = HEARTBEAT_TIMEOUT_MS }) {
   let worker = null;
   let stopped = true;
   let restarts = 0;
@@ -51,6 +51,10 @@ export function createAlertSupervisor({ ledger, sync, workerData, log, workerUrl
           break;
         }
         case 'progress': ledger.saveProgress(msg.points); break;
+        case 'stale':
+          log?.warn('no prices for a symbol while its market is open; its alerts cannot fire until prices return', { symbol: msg.symbol });
+          if (notifyStale) ledger.staleNotice(msg.symbol, msg.since);
+          break;
         case 'flushed': flushed?.(); break;
         case 'unsupported':
           unsupported = msg.symbols;

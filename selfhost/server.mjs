@@ -285,7 +285,14 @@ export async function startSelfhost(cfg, { log = createLogger({ level: cfg.logLe
       extendedHours: cfg.alertExtendedHours,
       resumeMaxGapMs: cfg.alertResumeMaxGapMin * 60_000,
       maxSymbols: cfg.alertMaxSymbols,
+      proxyUrl: proxy.url || null, // exchanges go through WICKLINE_PROXY, like upstream's market data
+      pollMs: cfg.alertPollSec * 1000,
+      closedPollMs: cfg.alertClosedPollSec * 1000,
+      staleAfter: cfg.alertStaleAfterMin
+        ? { crypto: cfg.alertStaleAfterMin * 60_000, equity: cfg.alertStaleAfterMin * 60_000 }
+        : { crypto: 5 * 60_000, equity: 10 * 60_000 },
     },
+    notifyStale: cfg.notifyStale,
   }) : null;
   supervisor?.start();
   state.ready = true;

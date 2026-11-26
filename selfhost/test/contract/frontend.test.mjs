@@ -83,3 +83,18 @@ test('the keys boot.js applies live are exactly the keys upstream has storage li
   assert.deepEqual([...listened].sort(), [...clientKeyConfig().live].sort(),
     `${point('storage-listeners')} update clientKeyConfig().live: keys in the list apply live, others wait for a reload`);
 });
+
+test('the alert worker\'s crypto sources use upstream\'s hosts, endpoints and message fields', async () => {
+  const src = readUpstream('public/js/datafeed.js');
+  const { BINANCE, COINBASE_REST, COINBASE_WS } = await import('../../alerts/sources/crypto.mjs');
+  for (const [market, cfg] of Object.entries(BINANCE)) {
+    for (const h of [...cfg.rest, ...cfg.ws]) assert.ok(src.includes(`'${h}'`), `${point('crypto-feeds')} ${market} host ${h}`);
+    assert.ok(src.includes(`ticker24: '${cfg.ticker24}'`), `${point('crypto-feeds')} ${market} ticker24`);
+  }
+  assert.ok(src.includes(`const COINBASE_REST = '${COINBASE_REST}'`), point('crypto-feeds'));
+  assert.ok(src.includes(`const COINBASE_WS = '${COINBASE_WS}'`), point('crypto-feeds'));
+  assert.match(src, /this\.emit\(`\$\{src\}:\$\{d\.s\}`, \+d\.c, \+d\.o\)/, `${point('crypto-feeds')} miniTicker fields s and c`);
+  assert.match(src, /if \(m\.type === 'ticker'\) this\.emit\(`COINBASE:\$\{m\.product_id\}`, \+m\.price/, `${point('crypto-feeds')} Coinbase ticker fields`);
+  assert.match(src, /\$\{cfg\.ticker24\}\?type=MINI&symbols=/, `${point('crypto-feeds')} spot batch ticker`);
+  assert.match(src, /\/products\/\$\{t\}\/stats/, `${point('crypto-feeds')} Coinbase stats (last price)`);
+});
