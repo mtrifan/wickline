@@ -29,6 +29,13 @@ export function stripCors(res) {
   res.writeHead = (status, ...rest) => {
     const args = rest.map((a) => (a && typeof a === 'object' ? stripHeaders(a) : a));
     for (const name of res.getHeaderNames()) if (isCors(name)) res.removeHeader(name);
+    // Event streams (upstream's live quotes too) must not be buffered by a reverse proxy such as
+    // nginx / Nginx Proxy Manager, or prices and sync changes arrive late or in bursts.
+    const obj = args.find((a) => a && typeof a === 'object' && !Array.isArray(a)); // the plain-object form upstream uses
+    const type = obj && Object.entries(obj).find(([k]) => k.toLowerCase() === 'content-type')?.[1];
+    if (String(type ?? res.getHeader('content-type') ?? '').startsWith('text/event-stream') && !res.hasHeader('x-accel-buffering')) {
+      if (obj) obj['X-Accel-Buffering'] = 'no'; else res.setHeader('X-Accel-Buffering', 'no');
+    }
     return writeHead(status, ...args);
   };
   res.setHeader = (name, value) => (isCors(name) ? res : setHeader(name, value));

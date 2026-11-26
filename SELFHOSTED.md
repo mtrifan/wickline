@@ -129,13 +129,29 @@ In public mode:
 - repeated failed logins slow down globally;
 - API tokens are off unless enabled.
 
-Caddy example:
+#### Behind a reverse proxy you already run (Nginx Proxy Manager, Caddy, SWAG)
 
-```
-wickline.example.com {
-  reverse_proxy unraid:5173
-}
-```
+If your router already forwards 443 to a reverse proxy on Unraid with a Let's Encrypt certificate:
+
+1. **DNS.** Point `wickline.yourdomain.com` at your home address, like your other services: a CNAME to your dynamic-DNS name, or an A record.
+2. **Proxy host.** Forward `wickline.yourdomain.com` to `http://<unraid-ip>:5173`, or to `http://wickline:5173` if both containers share a Docker network. Use HTTPS with your certificate, force SSL, and allow WebSockets.
+   - **Nginx Proxy Manager:** the steps above are the defaults. Wickline marks its live streams as not to be buffered, so no custom configuration is needed. If live prices still arrive in bursts, add `proxy_buffering off;` under *Advanced*.
+   - **Caddy:**
+     ```
+     wickline.yourdomain.com {
+       reverse_proxy <unraid-ip>:5173
+     }
+     ```
+3. **Find the proxy's address as Wickline sees it.** Open `https://wickline.yourdomain.com` and sign in, then run `docker logs wickline 2>&1 | grep '"msg":"login"' | tail -n 1`. While `TRUST_PROXY` is off, the `ip` shown is the proxy's address, for example `172.17.0.1` or `172.18.0.5`.
+4. **Two-factor login.** Run `docker exec -it wickline node selfhost/cli.mjs totp-setup` and add the code to an authenticator app.
+5. **Settings.** Edit the container:
+   - `EXPOSURE=public`;
+   - `WICKLINE_PASSWORD_HASH` (keep yours);
+   - `WICKLINE_TOTP_SECRET` from step 4;
+   - `TRUST_PROXY=true`;
+   - `TRUSTED_PROXY_IPS` set to the address from step 3;
+   - `PUBLIC_URL=https://wickline.yourdomain.com`, so notification links work away from home.
+6. **Close the direct port.** Do not forward 5173 on your router. Public mode refuses plain-HTTP requests, so `http://<unraid-ip>:5173` stops working even at home: use the domain there too. That needs your router to support hairpin NAT, or local DNS pointing the name at the proxy. A proxy on a shared Docker network can reach Wickline without the port published at all.
 
 ## Sync between devices
 
