@@ -121,6 +121,17 @@ export function createAlertLedger(db, { outbox, publicUrl = null, now = Date.now
     return fired ? { fired: true, key: fired } : { fired: false };
   }
 
+  /** One notification per stale episode of a symbol (NOTIFY_STALE). */
+  function staleNotice(symbol, since) {
+    const s = String(symbol);
+    const ticker = s.slice(s.indexOf(':') + 1) || s;
+    outbox?.enqueue(`stale:${s}:${since}`, {
+      title: `No prices for ${ticker}`,
+      message: `Wickline has received no prices for ${s} for a while although its market is open. Alerts on it cannot fire until prices return.`,
+      ...(publicUrl ? { url: `${publicUrl}/#s=${encodeURIComponent(s)}` } : {}),
+    });
+  }
+
   /** Stores the worker's latest prices (id -> { price, at, session }) for resuming after a restart. */
   function saveProgress(points) {
     const rows = Object.entries(points || {}).filter(([, p]) => p && Number.isFinite(p.price) && Number.isFinite(p.at));
@@ -141,5 +152,5 @@ export function createAlertLedger(db, { outbox, publicUrl = null, now = Date.now
     s.useHook('alerts', syncHook);
   }
 
-  return { attach, trigger, saveProgress, resumePoints, isTombstoned, lastTrigger, lastTriggerAt, syncHook };
+  return { attach, trigger, staleNotice, saveProgress, resumePoints, isTombstoned, lastTrigger, lastTriggerAt, syncHook };
 }

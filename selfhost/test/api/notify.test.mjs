@@ -94,7 +94,8 @@ test('notification settings are validated, the token can come from a file, and i
 
 test('a browser-detected alert trigger is pushed once, however many browsers report it', async () => {
   const g = await fakeGotify(200);
-  const ctx = await start({ GOTIFY_URL: g.url, GOTIFY_TOKEN: 'tok', PUBLIC_URL: 'https://wl.example' });
+  // No server-side checker: it would open a real Binance stream for this alert.
+  const ctx = await start({ GOTIFY_URL: g.url, GOTIFY_TOKEN: 'tok', PUBLIC_URL: 'https://wl.example', ALERTS_SERVER: 'false' });
   const { epoch } = await (await fetch(`${ctx.base}/api/selfhost/state`, { headers: { cookie: ctx.cookie } })).json();
   const put = (alerts, baseVersion) => fetch(`${ctx.base}/api/selfhost/state/alerts`, {
     method: 'PUT',

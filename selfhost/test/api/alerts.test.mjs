@@ -120,12 +120,12 @@ test('the status reports symbols beyond ALERT_MAX_SYMBOLS and symbols no source 
   const relay = newRelay();
   const ctx = await start(newDir(), relay, { ALERT_MAX_SYMBOLS: '1' });
   cleanup.push(() => ctx.app.close());
-  await ctx.put([armed, { ...armed, id: 'k2', symbol: 'MSFT' }, { ...armed, id: 'k3', symbol: 'BINANCE:BTCUSDT' }], 0);
+  await ctx.put([armed, { ...armed, id: 'k2', symbol: 'MSFT' }, { ...armed, id: 'k3', symbol: 'KRAKEN:XBTUSD' }], 0);
   const status = async () => (await fetch(`${ctx.base}/api/selfhost/alerts/status`, { headers: { cookie: ctx.cookie } })).json();
   await until(async () => (await status()).truncated === 1, 8000);
   const st = await status();
-  assert.deepEqual(st.unsupportedSymbols, ['BINANCE:BTCUSDT']);
-  assert.equal(st.symbols, 1);
+  assert.deepEqual(st.unsupportedSymbols, ['KRAKEN:XBTUSD']);
+  assert.equal(st.sources.YAHOO.symbols, 1);
 });
 
 test('progress survives a restart: a crossing during the downtime fires once, noted as a gap', async () => {
